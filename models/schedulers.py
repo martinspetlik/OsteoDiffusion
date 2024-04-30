@@ -55,10 +55,11 @@ class NoiseScheduler(nn.Module):
         self.alphas = 1.0 - self.betas
         alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
-        posterior_variance = (
+        self.posterior_variance = (
             self.betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         )
 
+        self.sqrt_recip_alphas =  torch.sqrt(1.0 / self.alphas)
         self.sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
 

@@ -24,7 +24,7 @@ from torch.optim import lr_scheduler
 # from datetime import datetime
 from models.auxiliary_functions import get_mean_std, log_data, exp_data, quantile_transform_fit, QuantileTRF, NormalizeData, log_all_data, init_norm, log10_data, log10_all_data, get_loss_fn
 # from metamodel.cnn.visualization.visualize_data import plot_samples, plot_dataset
-from datasets.dataset_preprocessing import prepare_dataset
+from datasets.dataset_preprocessing import prepare_dataset, get_inverse_transform
 from models.diffusion_model import DiffusionModel
 from gnn_models import GNN
 from models.schedulers import NoiseScheduler
@@ -66,6 +66,8 @@ def validate(model, validation_loader, loss_fn=nn.MSELoss(), acc_fn=nn.MSELoss()
 
     return avg_vloss, avg_vacc
 
+
+
 def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss(), use_cuda=True):
     """
     Train NN
@@ -82,9 +84,19 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
         # inputs = inputs.float()
         # targets = targets.float()
+        graphs = graphs.float()
         optimizer.zero_grad()
 
-        noise, predicted_noise = torch.squeeze(model(graphs))
+        print("graphs[0] ", graphs[0])
+
+        print("train one epoch graphs shape ", graphs.shape)
+
+        noise, predicted_noise = model(graphs)
+
+
+        print("noise ", noise.shape)
+        print("predicted noise ", predicted_noise.shape)
+
         loss = loss_fn(noise, predicted_noise)
 
         loss.backward()
@@ -95,7 +107,6 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
         running_loss += loss.item()
 
     train_loss = running_loss / (i + 1)
-    train_loss = running_loss / (i + 1)
     return train_loss
 
 
@@ -103,15 +114,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
     best_vloss = 1_000_000.
     lr = trial.suggest_categorical("lr", trials_config["lr"])
     batch_size_train = trial.suggest_categorical("batch_size_train", trials_config["batch_size_train"])
+    batch_size_sample = trial.suggest_categorical("batch_size_sample", trials_config["batch_size_sample"])
     config["batch_size_train"] = batch_size_train
-
-    ###
-    # GNN config
-    ###
-    hidden_t_embd = trials_config["hidden_t_embd"]
-    hidden_v_embd = trials_config["hidden_v_embd"]
-    num_gnn_layers = trials_config["num_gnn_layers"]
-    dropout = trials_config["dropout"]
+    config["batch_size_sample"] = batch_size_sample
 
     ####
     # Noise scheduler config
@@ -143,18 +148,17 @@ def objective(trial, trials_config, train_loader, validation_loader):
         #     train_set, validation_set, test_set = prepare_sub_datasets(study, config, data_dir=data_dir,
         #                                                                serialize_path=output_dir)
         # else:
-        train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir,
+        dataset = prepare_dataset(study, config, data_dir=data_dir,
                                                               serialize_path=output_dir)
 
-        print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set),
-                                                                            len(test_set)))
+        print("len(dataset): {}".format(len(dataset)))
 
         print("config batch size train", config["batch_size_train"])
 
-        train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
-        validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"],
-                                                        shuffle=False)
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
+        data_loader = torch.utils.data.DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
+        # validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"],
+        #                                                 shuffle=False)
+        # test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
 
     # plot_samples(train_loader, n_samples=25)
     # exit()
@@ -162,7 +166,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
     optimizer_name = "AdamW"
     if "optimizer_name" in trials_config:
         optimizer_name = trial.suggest_categorical("optimizer_name", trials_config["optimizer_name"])
-
 
 
     #####################
@@ -174,12 +177,10 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ##################################
     ### Graph neural network model ###
     ##################################
-    gnn_config = {"hidden_t_embd": hidden_t_embd,
-                  "hidden_v_embd": hidden_v_embd,
-                  "num_gnn_layers": num_gnn_layers,
-                  "dropout": dropout}
+    if "gnn_config" in trials_config:
+        gnn_config = trial.suggest_categorical("gnn_config", trials_config["gnn_config"])
     num_node_attrs = 4
-    gnn_model = GNN(num_node_attrs=num_node_attrs, adj_matrix=train_set.adj_matrix, gnn_config=gnn_config)
+    gnn_model = GNN(num_node_attrs=num_node_attrs, adj_matrix=dataset.adj_matrix, gnn_config=gnn_config)
 
     #######################
     ### Noise scheduler ###
@@ -246,19 +247,26 @@ def objective(trial, trials_config, train_loader, validation_loader):
                                             gamma=trial_scheduler["gamma"])
 
 
+    inverse_transform = get_inverse_transform(study)
 
     for epoch in range(config["num_epochs"]):
         #try:
         if train:
             diff_model.train(True)
-            avg_loss = train_one_epoch(diff_model, optimizer, train_loader, config, loss_fn=loss_fn, use_cuda=use_cuda)  # Train the model
+            avg_loss = train_one_epoch(diff_model, optimizer, data_loader, config, loss_fn=loss_fn, use_cuda=use_cuda)  # Train the model
 
         diff_model.train(False)
-        if len(validation_set) == 0:
-            avg_vloss = avg_loss
-            avg_vacc = 0
-        else:
-            avg_vloss, avg_vacc = validate(diff_model, validation_loader, loss_fn=loss_fn, use_cuda=use_cuda)   # Evaluate the model
+        # if len(validation_set) == 0:
+        avg_vloss = 0
+        avg_vacc = 0
+        # else:
+        #     avg_vloss, avg_vacc = validate(diff_model, validation_loader, loss_fn=loss_fn, use_cuda=use_cuda)   # Evaluate the model
+
+        # sample
+        samples = diff_model.sample(batch_size=batch_size_sample, inverse_transform=inverse_transform)
+
+        print("samples ", samples)
+
 
         if scheduler is not None:
             scheduler.step(avg_vloss)
@@ -394,11 +402,11 @@ if __name__ == '__main__':
     # Datasets and data loaders
     # ================================
     train_loader, validation_loader = None, None
-    # if "n_train_samples" not in config or not isinstance(config["n_train_samples"], (list, np.ndarray)):
-    #     train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
-    #     train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
-    #     validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
-    #     test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
+    if "n_train_samples" not in config or not isinstance(config["n_train_samples"], (list, np.ndarray)):
+        dataset = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
+        data_loader = torch.utils.data.DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
+        #validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
+        #test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
 
     def obj_func(trial):
         return objective(trial, trials_config, train_loader, validation_loader)

@@ -10,69 +10,105 @@ import pyvista as pv
 
 
 class BoneDataset(Dataset):
-    def __init__(self, data_dir, init_transform=None, input_transform=None):
-        self.data_dir = data_dir  #"/home/martin/Documents/Bones_diff_model/data/L4"
+    def __init__(self, data_dir, input_transform=None):
+        self.data_dir = data_dir
         self.input_transform = input_transform
-        self.init_transform = init_transform
-
-        self._graphs = []
+        self._graphs_features = []
+        self.num_nodes = 0
+        self._adj_matrix = None
         self.process_data()
 
     def shuffle(self, seed):
         np.random.seed(seed)
-        perm = np.random.permutation(len(self._graphs))
-        self._graphs = list(np.array(self._graphs)[perm])
+        perm = np.random.permutation(len(self._graphs_features))
+        print("perm ", perm)
+        self._graphs_features = self._graphs_features[perm]
 
-    def get_vertices_edges(self):
+    def get_graphs(self):
         template_data_path = os.path.join(self.data_dir, 'template.vtk')
         template = pv.read(template_data_path)
         vertices = template.points
+
+        subselect_vertices = True
+        if subselect_vertices:
+            selected_vertices = set()
 
         edges_file = os.path.join(self.data_dir, "L4_edges.npz")
         if os.path.exists(edges_file):
             edges = np.load(edges_file)["data"]
         else:
-            cells = template.cells.reshape((-1, 5))[:, 1:5] # no need to store cell type
+            cells = template.cells.reshape((-1, 5))[:, 1:5]  # no need to store cell type
             edges = []
             for vertex_id in range(len(vertices)):
                 connected = BoneDataset.find_connected_vertices(vertex_id, cells)
-                for conected_vertes in connected:
-                    edges.append([vertex_id, conected_vertes])
+                if subselect_vertices:
+                    selected_vertices.add(vertex_id)
+                for conected_vertex in connected:
+                    edges.append([vertex_id, conected_vertex])
+                    if subselect_vertices:
+                        selected_vertices.add(conected_vertex)
+
+                if subselect_vertices and len(selected_vertices) > 100:
+                    print("selected vertices ", selected_vertices)
+                    vertices = selected_vertices
+                    break
                 print("vertex_id: {}, connected: {} ".format(vertex_id, connected))
 
-        return vertices, edges
+        return self.get_graphs_features(template), vertices, edges
+
+    @staticmethod
+    def cell2point_data(tvar, data):
+        n = len(data)
+        m = len(tvar.points)
+        new_data = np.zeros((n, m))
+        for i in range(n):
+            tvar['data'] = data[i]
+            new = tvar.cell_data_to_point_data()
+            new_data[i] = new['data']
+        return new_data
+
+    def get_graphs_features(self, template):
+        graphs_features_path = os.path.join(self.data_dir, 'u.npy')
+        graphs_features = np.load(graphs_features_path)
+
+        density_data_path = os.path.join(self.data_dir, 'rho.npy')
+        density = np.load(density_data_path)
+
+        density = BoneDataset.cell2point_data(template, density)
+        density = density[..., np.newaxis]
+
+        graphs_features = torch.tensor(np.concatenate((graphs_features, density), axis=-1))
+        return graphs_features
 
 
     def process_data(self):
-        node_features_path = os.path.join(self.data_dir, 'u.npy')
-        node_features = np.load(node_features_path)
+        self._graphs_features, vertices, edges = self.get_graphs()
 
-        vertices, edges = self.get_vertices_edges()
+        self.num_nodes = len(vertices)
 
-        for i in range(node_features.shape[0]):
-            graph = dgl.DGLGraph()
-            graph.add_nodes(len(vertices), {'x': torch.from_numpy(node_features[i])})
-            #print("graph.ndata['x'] ", graph.ndata['x'])
+        graph = dgl.DGLGraph()
+        src, dst = zip(*edges)
+        graph.add_edges(src, dst)
+        self.adj_matrix = graph.adj()
 
-            src, dst = zip(*edges)
-            graph.add_edges(src, dst)
-
-            self._graphs.append(graph)
 
     def __getitem__(self, idx):
-        graphs = self._graphs[idx]
+        graphs = self._graphs_features[idx]
 
-        print("graphs ", graphs)
-
-        if isinstance(graphs, (list, np.ndarray)):
-            new_dataset = copy.deepcopy(self)
+        if len(graphs.shape) > 2:
+            new_dataset = BoneDataset(self.data_dir)  # copy.deepcopy(self)
             new_dataset._graphs = graphs
+            new_dataset.adj_matrix = self.adj_matrix
+            new_dataset.input_transform = self.input_transform
             return new_dataset
+
+        if self.input_transform is not None:
+            graphs = self.input_transform(graphs)
 
         return graphs
 
     def __len__(self):
-        return 1
+        return len(self._graphs_features)
 
     @staticmethod
     def find_faces_with_node(index, cells):

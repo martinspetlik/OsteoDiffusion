@@ -8,8 +8,10 @@ def extract(
     constants: torch.Tensor, timestamps: torch.Tensor, shape: int
 ) -> torch.Tensor:
     batch_size = timestamps.shape[0]
-    print("constants ", constants)
-    print("timestamps ", timestamps)
+    print("constants ", constants.shape)
+    print("timestamps ", timestamps.shape)
+
+    timestamps = torch.squeeze(timestamps)
     out = constants.gather(-1, timestamps)
     return out.reshape(batch_size, *((1,) * (len(shape) - 1))).to(timestamps.device)
 
@@ -28,37 +30,33 @@ class QuantileTRF():
         return quantile_inv_transform_trf(passed_data, self.quantile_trfs_out)
 
 
+
 class NormalizeData():
     def __init__(self):
-        self.input_indices = [0, 1, 2]
-        self.output_indices = [0, 1, 2]
+        self.input_indices = [0, 1, 2, 3]
+        #self.output_indices = [0, 1, 2]
         self.input_mean = [0, 0, 0, 0]
-        self.output_mean = [0, 0, 0, 0]
+        #self.output_mean = [0, 0, 0, 0]
         self.input_std = [1, 1, 1, 1]
-        self.output_std = [1,1,1, 1]
-        self.output_quantiles = []
+        #self.output_std = [1,1,1, 1]
+        #self.output_quantiles = []
 
     def normalize_input(self, data):
-        output_data = torch.empty((data.shape))
-        for i in range(data.shape[0]):
-            if i in self.input_indices:
-                output_data[i][...] = (data[i] - self.input_mean[i]) /self.input_std[i]
-            else:
-                output_data[i][...] = data[i]
-
-        return output_data
+        data = (data - self.input_mean) / self.input_std
+        return torch.squeeze(data)
 
     def normalize_output(self, data):
-        output_data = torch.empty((data.shape))
-        for i in range(data.shape[0]):
-            if i in self.output_indices:
-                if hasattr(self, 'output_quantiles') and len(self.output_quantiles) > 0:
-                    output_data[i][...] =(data[i] - self.output_quantiles[1, i]) / (self.output_quantiles[2, i] - self.output_quantiles[0, i])
-                else:
-                    output_data[i][...] = (data[i] - self.output_mean[i]) /self.output_std[i]
-            else:
-                output_data[i][...] = data[i]
-        return output_data
+        raise NotImplementedError
+        # output_data = torch.empty((data.shape))
+        # for i in range(data.shape[0]):
+        #     if i in self.output_indices:
+        #         if hasattr(self, 'output_quantiles') and len(self.output_quantiles) > 0:
+        #             output_data[i][...] =(data[i] - self.output_quantiles[1, i]) / (self.output_quantiles[2, i] - self.output_quantiles[0, i])
+        #         else:
+        #             output_data[i][...] = (data[i] - self.output_mean[i]) /self.output_std[i]
+        #     else:
+        #         output_data[i][...] = data[i]
+        # return output_data
 
 
 def log_all_data(data):
@@ -334,22 +332,26 @@ def power_10_all_data(data):
 
 
 def get_mean_std(data_loader, output_iqr=[]):
-    channels_sum = None
-    channels_sqrd_sum = None
-    num_batches = 0
-    quantiles = []
-    for graph in data_loader:
-        print("get mean std graph ", graph)
-        if channels_sum is None:
-            channels_sum = list(np.zeros(input.shape[1]))
-            channels_sqrd_sum = list(np.zeros(input.shape[1]))
+    running_sum = torch.zeros((1, 1, 4))
+    running_sum_squares = torch.zeros((1, 1, 4))
+    num_values = 0
+    for node_features in data_loader:
+        print("node features shape ", node_features.shape)
+        running_sum += torch.sum(node_features, dim=(0, 1), keepdim=True)
+        running_sum_squares += torch.sum(node_features ** 2, dim=(0, 1), keepdim=True)
+        num_values += (node_features.shape[0] * node_features.shape[1])  # add batch size * num vertices
 
-        channels_sum += (torch.nanmean(input, dim=[0, 2, 3])).numpy()
-        channels_sqrd_sum += (torch.nanmean(input ** 2, dim=[0, 2, 3])).numpy()
-        num_batches += 1
+    mean = running_sum / num_values
+    std = (running_sum_squares / num_values - (mean ** 2)) ** 0.5
 
-    mean = channels_sum / num_batches
-    std = (channels_sqrd_sum / num_batches - mean ** 2) ** 0.5
+    # final_features = (node_features - mean) / std
+    #
+    # f_features_mean = torch.mean(final_features, dim=(0, 1))
+    # f_features_std = torch.std(final_features, dim=(0, 1))
+    #
+    # print("f features mean ", f_features_mean)
+    # print("f features std ", f_features_std)
+
     return mean, std
 
 
@@ -1506,7 +1508,39 @@ class KLLoss(nn.Module):
 def get_loss_fn(loss_function):
     loss_fn_name = loss_function[0]
     loss_fn_params = loss_function[1]
-    if loss_fn_name == "KL" or loss_fn_name == "cross_entropy":
+    if loss_fn_name == "MSE" or loss_fn_name == "L2":
+        return nn.MSELoss()
+    elif loss_fn_name == "L1":
+        return nn.L1Loss()
+    elif loss_fn_name == "Frobenius":
+        return FrobeniusNorm()
+    elif loss_fn_name == "Frobenius2":
+        return FrobeniusNorm2()
+    elif loss_fn_name == "MSEweighted":
+        return WeightedMSELoss(loss_fn_params)
+    elif loss_fn_name == "RelMSELoss":
+        return RelMSELoss(loss_fn_params)
+    elif loss_fn_name == "MASELoss":
+        return MASELoss(loss_fn_params)
+    elif loss_fn_name == "RelMSELoss2":
+        return RelMSELoss2(loss_fn_params)
+    elif loss_fn_name == "RelXYMSELoss":
+        return RelXYMSELoss(loss_fn_params)
+    elif loss_fn_name == "MSEweightedSum":
+        return WeightedMSELossSum(loss_fn_params)
+    elif loss_fn_name == "EighMSE":
+        return EighMSE(loss_fn_params)
+    elif loss_fn_name == "EighMSE_2":
+        return EighMSE_2(loss_fn_params)
+    elif loss_fn_name == "EighMSE_MSE":
+        return EighMSE_MSE(loss_fn_params)
+    elif loss_fn_name == "EighMSE_2_MSE":
+        return EighMSE_2_MSE(loss_fn_params)
+    elif loss_fn_name == "MSELossLargeEmph":
+        return MSELossLargeEmph(loss_fn_params)
+    elif loss_fn_name == "MSELossLargeEmphAvg":
+        return MSELossLargeEmphAvg(loss_fn_params)
+    elif loss_fn_name == "KL" or loss_fn_name == "cross_entropy":
         return KLLoss()
 
 
