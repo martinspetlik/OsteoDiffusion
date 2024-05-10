@@ -8,8 +8,7 @@ def extract(
     constants: torch.Tensor, timestamps: torch.Tensor, shape: int
 ) -> torch.Tensor:
     batch_size = timestamps.shape[0]
-    print("constants ", constants.shape)
-    print("timestamps ", timestamps.shape)
+    print("batch size ", batch_size)
 
     timestamps = torch.squeeze(timestamps)
     out = constants.gather(-1, timestamps)
@@ -336,7 +335,6 @@ def get_mean_std(data_loader, output_iqr=[]):
     running_sum_squares = torch.zeros((1, 1, 4))
     num_values = 0
     for node_features in data_loader:
-        print("node features shape ", node_features.shape)
         running_sum += torch.sum(node_features, dim=(0, 1), keepdim=True)
         running_sum_squares += torch.sum(node_features ** 2, dim=(0, 1), keepdim=True)
         num_values += (node_features.shape[0] * node_features.shape[1])  # add batch size * num vertices

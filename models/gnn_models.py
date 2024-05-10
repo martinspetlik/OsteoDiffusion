@@ -18,7 +18,7 @@ class GNNLayer(nn.Module):
                  dropout):
         super().__init__()
 
-        print('hidden_X: {}, hidden_t: {}'.format(hidden_X, hidden_t))
+        #print('hidden_X: {}, hidden_t: {}'.format(hidden_X, hidden_t))
 
         self.update_X = nn.Sequential(
             nn.Linear(hidden_X + hidden_t, hidden_X),
@@ -26,7 +26,6 @@ class GNNLayer(nn.Module):
             nn.LayerNorm(hidden_X),
             nn.Dropout(dropout)
         )
-
 
     def forward(self, A, h_X, h_t):
         """
@@ -44,31 +43,29 @@ class GNNLayer(nn.Module):
         h_X : torch.Tensor of shape (|V|, hidden_X)
             Updated hidden representations for the node attributes.
         """
-        print("GNN Layer forward")
-
-
-        print("A shape ", A.shape)
-        print("h_X shape ", h_X.shape)
-        print("h_t ", h_t.shape)
-
+        # print("GNN Layer forward")
+        #
+        # print("A shape ", A.shape)
+        # print("h_X shape ", h_X.shape)
+        # print("h_t ", h_t.shape)
 
         h_aggr_X = dglsp.bspmm(A, h_X)  # A @ h_X for batch
 
         #h_aggr_X = A @ h_X
         #h_aggr_Y = A @ h_Y
 
-        print("h_aggr_X ", h_aggr_X.shape)
+        #print("h_aggr_X ", h_aggr_X.shape)
 
         num_nodes = h_X.size(0)
         h_t_expand = h_t.expand(num_nodes, -1)
-        print("h t expand shape", h_t_expand.shape)
+        #print("h t expand shape", h_t_expand.shape)
 
         h_t_expand = h_t_expand.unsqueeze(-1).expand(*h_t_expand.shape, h_X.shape[-1])
-        print("h_t_expand ", h_t_expand.shape)
+        #print("h_t_expand ", h_t_expand.shape)
 
         h_aggr_X = torch.cat([h_aggr_X, h_t_expand], dim=1).permute(2, 0, 1)
 
-        print("h aggr X shape ", h_aggr_X.shape)
+        #print("h aggr X shape ", h_aggr_X.shape)
 
 
         h_X = self.update_X(h_aggr_X)
@@ -76,7 +73,7 @@ class GNNLayer(nn.Module):
 
         h_X = h_X.permute(1,2,0)
 
-        print("h_X updated shape ", h_X.shape)
+        #print("h_X updated shape ", h_X.shape)
 
         return h_X
 
@@ -108,8 +105,7 @@ class GNNTower(nn.Module):
                  sin_emb_dim=64):
         super().__init__()
 
-
-        print("hidden_t_embd: {},  hidden_v_embd: {}".format(hidden_t_embd, hidden_v_embd))
+        #print("hidden_t_embd: {},  hidden_v_embd: {}".format(hidden_t_embd, hidden_v_embd))
 
         #in_X = num_attrs_X * adj_matrix.shape[0] #* num_classes_X
         self.num_attrs_X = num_attrs_X
@@ -155,16 +151,16 @@ class GNNTower(nn.Module):
         # )
 
     def forward(self, x, t):
-        print("GNNTower forward")
-        print("x ", x.shape)
-        print("t shape ", t.shape)
+        # print("GNNTower forward")
+        # print("x ", x.shape)
+        # print("t shape ", t.shape)
 
         batch_size, num_vertices, num_node_attrs = x.shape
         x = x.permute(1,2,0).float()  # (num_vertices, num_node_attrs, batch_size)
 
         # Expand adjacency matrix values to the batch size
-        print("self.adj_matrix.val.shape ", self.adj_matrix.val.shape)
-        print("x.shape ", x.shape)
+        # print("self.adj_matrix.val.shape ", self.adj_matrix.val.shape)
+        # print("x.shape ", x.shape)
         if len(self.adj_matrix.val.shape) == 1:
             expanded_vals = self.adj_matrix.val.unsqueeze(1).expand(self.adj_matrix.val.shape[0], batch_size).float()
             expanded_vals = expanded_vals.to(torch.device(x.device))
@@ -174,9 +170,8 @@ class GNNTower(nn.Module):
             new_vals = self.orig_adj_matrix.val.unsqueeze(1).expand(self.orig_adj_matrix.val.shape[0], x.shape[-1]).float()
             new_vals = new_vals.to(torch.device(x.device))
 
-
-            print("new vals device ", new_vals.device)
-            print("self.adj_matrix.device ", self.adj_matrix.device)
+            # print("new vals device ", new_vals.device)
+            # print("self.adj_matrix.device ", self.adj_matrix.device)
 
             # new_vals = self.adj_matrix.val[..., :x.shape[-1]]
             # print("new vals shape ", new_vals.shape)
@@ -185,22 +180,8 @@ class GNNTower(nn.Module):
             # new_vals = new_vals.to(torch.device(x.device))
             self.adj_matrix = dgl.sparse.val_like(self.adj_matrix, new_vals)
 
-            print("self.adj_matrix.val.shape ", self.adj_matrix.val.shape)
-            print("x.shape ", x.shape)
-
-
-        print("self.adj_matrix.val.shape ", self.adj_matrix.val.shape)
-
-        #if self.adj_matrix.val.shape[-1]
-
-        # expanded_tensor = self.adj_matrix.val.unsqueeze(1)
-        # print("expanend tensor ", expanded_tensor.shape)
-        # expanded_tensor = expanded_tensor.expand(550, 5)
-        #
-        #
-        # batch_adj_matrix = dgl.sparse.val_like(self.adj_matrix, expanded_tensor)
-
-        print("t ", t)
+            # print("self.adj_matrix.val.shape ", self.adj_matrix.val.shape)
+            # print("x.shape ", x.shape)
 
         t = t.float()
 
@@ -209,7 +190,7 @@ class GNNTower(nn.Module):
 
         #h_X_list = [h_X]
         for gnn in self.gnn_layers:
-            print("gNN LAYERS h_X shape ", h_X.shape)
+            #print("gNN LAYERS h_X shape ", h_X.shape)
             h_X = gnn(self.adj_matrix, h_X, h_t)
             #h_X_list.append(h_X)
 
@@ -265,6 +246,6 @@ class GNN(nn.Module):
 
     def forward(self, x, t):
         gnn_pred = self.gnn_tower(x, t)
-        print("gnn pred ", gnn_pred.shape)
+        #print("gnn pred ", gnn_pred.shape)
         return gnn_pred
 
