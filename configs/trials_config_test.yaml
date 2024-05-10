@@ -1,0 +1,26 @@
+num_diff_steps: 5
+
+optimizer_name: ["AdamW"]
+lr: [0.001] #[1e-3, 5e-4, 1e-4]
+num_epochs: 25
+num_trials: 100
+random_seed: 12345
+batch_size_train: [1]
+batch_size_sample: [1]
+n_train_samples: [322]
+n_test_samples: 5000
+loss_function: [["MSE", []]]
+scheduler: [{'class': "ReduceLROnPlateau", 'patience': 5, 'factor': 0.9}]
+sampler_class: BruteForceSampler
+train: True
+output_bias: True
+
+
+init_norm: False
+log_input: False
+gnn_config: [{"hidden_t_embd": 32, "hidden_v_embd": 4, "num_gnn_layers": 2,"dropout": 0, "sin_emb_dim": 64, "sin_emb_theta": 1000}]
+num_timesteps: 25
+normalize_input: True
+
+
+
