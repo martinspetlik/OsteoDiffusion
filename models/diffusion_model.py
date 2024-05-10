@@ -25,9 +25,6 @@ class DiffusionModel(nn.Module):
         :param noise:
         :return:
         """
-        # print("x_start.shape ", x_start.shape)
-        print("t ", t)
-
         if noise is None:
             noise = torch.randn_like(x_start)
 
@@ -35,9 +32,6 @@ class DiffusionModel(nn.Module):
         sqrt_one_minus_alphas_cumprod_t = extract(
             self.noise_scheduler.sqrt_one_minus_alphas_cumprod, t, x_start.shape
         )
-
-        print("sqrt_alphas_cumprod_t ", sqrt_alphas_cumprod_t)
-        print("sqrt_one_minus_alphas_cumprod_t ", sqrt_one_minus_alphas_cumprod_t)
 
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
 
@@ -52,7 +46,7 @@ class DiffusionModel(nn.Module):
 
         #print("x device ", x.device)
 
-        print("noise mean: {}, std: {}".format(torch.mean(noise), torch.std(noise)))
+        #print("noise mean: {}, std: {}".format(torch.mean(noise), torch.std(noise)))
 
         # t = torch.randint(0, self.noise_scheduler.num_timesteps, (batch_size,1), device=x.device).long()
         #
@@ -71,13 +65,18 @@ class DiffusionModel(nn.Module):
 
         x_noised = self.q_sample(x, timestamp, noise=noise)
 
-        print("x noised ", x_noised)
-        print("timestamp ", timestamp)
-        print("mean noise ", torch.mean(noise))
+        # print("x noised ", x_noised)
+        # print("timestamp ", timestamp)
+        # print("mean noise ", torch.mean(noise))
 
         predicted_noise = self.model(x_noised, timestamp)
 
-        predicted_noise = predicted_noise.permute(2, 0, 1)  # (batch size, num vertices, num attrs)
+        # print("noise shape ", noise.shape)
+        # print("predicted noise shape", predicted_noise.shape)
+
+        predicted_noise = predicted_noise#.permute(2, 0, 1)  # (batch size, num vertices, num attrs)
+
+        predicted_noise = torch.unsqueeze(predicted_noise, 0)
 
         return noise, predicted_noise
 
@@ -106,7 +105,7 @@ class DiffusionModel(nn.Module):
 
         preds = self.model(x, batched_timestamps)
 
-        preds = preds.permute(2, 0, 1) # (batch size, num vertices, num attrs)
+        #preds = preds.permute(2, 0, 1) # (batch size, num vertices, num attrs)
 
         # print("preds shape ", preds.shape)
         #

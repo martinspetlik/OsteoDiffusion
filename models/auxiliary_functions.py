@@ -8,8 +8,6 @@ def extract(
     constants: torch.Tensor, timestamps: torch.Tensor, shape: int
 ) -> torch.Tensor:
     batch_size = timestamps.shape[0]
-    print("batch size ", batch_size)
-
     timestamps = torch.squeeze(timestamps)
     out = constants.gather(-1, timestamps)
     return out.reshape(batch_size, *((1,) * (len(shape) - 1))).to(timestamps.device)

@@ -23,8 +23,8 @@ class GNNLayer(nn.Module):
         self.update_X = nn.Sequential(
             nn.Linear(hidden_X + hidden_t, hidden_X),
             nn.ReLU(),
-            nn.LayerNorm(hidden_X),
-            nn.Dropout(dropout)
+            #nn.LayerNorm(hidden_X),
+            #nn.Dropout(dropout)
         )
 
     def forward(self, A, h_X, h_t):
@@ -61,19 +61,14 @@ class GNNLayer(nn.Module):
         #print("h t expand shape", h_t_expand.shape)
 
         h_t_expand = h_t_expand.unsqueeze(-1).expand(*h_t_expand.shape, h_X.shape[-1])
-        #print("h_t_expand ", h_t_expand.shape)
+        #print("h_t_expand ", h_t_expand)
 
         h_aggr_X = torch.cat([h_aggr_X, h_t_expand], dim=1).permute(2, 0, 1)
-
-        #print("h aggr X shape ", h_aggr_X.shape)
-
 
         h_X = self.update_X(h_aggr_X)
         #h_Y = self.update_Y(h_aggr_Y)
 
         h_X = h_X.permute(1,2,0)
-
-        #print("h_X updated shape ", h_X.shape)
 
         return h_X
 
@@ -143,12 +138,13 @@ class GNNTower(nn.Module):
             for _ in range(num_gnn_layers)])
 
         # # +1 for the input attributes
-        # hidden_cat = (num_gnn_layers + 1) * (hidden_v_embd) + hidden_t_embd
-        # self.mlp_out = nn.Sequential(
-        #     nn.Linear(hidden_cat, hidden_cat),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_cat, num_attrs_X)
-        # )
+        hidden_cat = (num_gnn_layers + 1) * (hidden_v_embd) + hidden_t_embd
+
+        self.mlp_out = nn.Sequential(
+            nn.Linear(hidden_cat, hidden_cat),
+            nn.ReLU(),
+            nn.Linear(hidden_cat, num_attrs_X)
+        )
 
     def forward(self, x, t):
         # print("GNNTower forward")
@@ -156,7 +152,7 @@ class GNNTower(nn.Module):
         # print("t shape ", t.shape)
 
         batch_size, num_vertices, num_node_attrs = x.shape
-        x = x.permute(1,2,0).float()  # (num_vertices, num_node_attrs, batch_size)
+        x = x.permute(1, 2, 0).float()  # (num_vertices, num_node_attrs, batch_size)
 
         # Expand adjacency matrix values to the batch size
         # print("self.adj_matrix.val.shape ", self.adj_matrix.val.shape)
@@ -188,25 +184,22 @@ class GNNTower(nn.Module):
         h_X = x #self.mlp_in_X(x)
         h_t = self.mlp_in_t(t)#.unsqueeze(0)
 
-        #h_X_list = [h_X]
+        h_X_list = [h_X]
         for gnn in self.gnn_layers:
-            #print("gNN LAYERS h_X shape ", h_X.shape)
             h_X = gnn(self.adj_matrix, h_X, h_t)
-            #h_X_list.append(h_X)
+            h_X_list.append(h_X)
 
-        #exit()
 
-        # h_t = h_t.expand(h_X.size(0), -1)
-        # print("h_t shape first expand ", h_t.shape)
-        # h_t = h_t.unsqueeze(1).expand(*h_t.shape, batch_size)
-        # print("h_t shape ", h_t.shape)
-        # h_cat = torch.cat(h_X_list + [h_t], dim=1)
-        # print("h_cat shape ", h_cat.shape)
-        #
-        # print("h cat ", h_cat)
+        ###
+        # Crucial part - it was not learning properly without output MLP
+        ###
+        h_t = h_t.expand(h_X.size(0), -1)
+        h_t = h_t.unsqueeze(-1).expand(*h_t.shape, batch_size)
+        h_cat = torch.cat(h_X_list + [h_t], dim=1)
+        h_cat = torch.squeeze(h_cat)
 
-        return h_X
-        #return self.mlp_out(h_cat)
+        #return h_X
+        return self.mlp_out(h_cat)
 
 
 class GNN(nn.Module):
@@ -236,11 +229,9 @@ class GNN(nn.Module):
         #     nn.Linear(time_dim, time_dim),
         # )
 
-        print("gnn config ", gnn_config)
 
         self.num_node_attrs = num_node_attrs
         self.adj_matrix = adj_matrix
-
 
         self.gnn_tower = GNNTower(num_node_attrs, adj_matrix, **gnn_config)
 

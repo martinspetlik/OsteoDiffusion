@@ -87,17 +87,21 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
         graphs = graphs.float()
         optimizer.zero_grad()
 
-        print("graphs[0] ", graphs[0])
+        #print("graphs[0] ", graphs[0])
 
-        print("train one epoch graphs shape ", graphs.shape)
+        #print("train one epoch graphs shape ", graphs.shape)
 
         noise, predicted_noise = model(graphs)
 
-
-        print("noise ", noise.shape)
-        print("predicted noise ", predicted_noise.shape)
+        # print("noise shape", noise.shape)
+        # print("predicted noise shape", predicted_noise.shape)
+        print("noise ", noise[0])
+        print("predicted noise ", predicted_noise[0])
 
         loss = loss_fn(noise, predicted_noise)
+
+        # print("loss shape ", loss.shape)
+        # print("loss.item() ", loss.item())
 
         loss.backward()
 
@@ -105,6 +109,7 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
         # Gather data and report
         running_loss += loss.item()
+
 
     train_loss = running_loss / (i + 1)
     return train_loss
@@ -263,10 +268,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
         #     avg_vloss, avg_vacc = validate(diff_model, validation_loader, loss_fn=loss_fn, use_cuda=use_cuda)   # Evaluate the model
 
         # sample
-        samples = diff_model.sample(batch_size=batch_size_sample, inverse_transform=inverse_transform)
+        #samples = diff_model.sample(batch_size=batch_size_sample, inverse_transform=inverse_transform)
 
-        print("samples ", samples)
-
+        #print("samples ", samples)
 
         if scheduler is not None:
             scheduler.step(avg_vloss)
