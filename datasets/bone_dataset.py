@@ -1,17 +1,20 @@
 import os
 import copy
 #os.environ["DGLBACKEND"] = "pytorch"
-import dgl
+#import dgl
 import torch
+from torch_geometric.data import Data
 from torch.utils.data import Dataset
 import numpy as np
 import pyvista as pv
+from torch_geometric.utils import to_scipy_sparse_matrix, to_torch_sparse_tensor
 
 
 class BoneDataset(Dataset):
-    def __init__(self, data_dir, input_transform=None):
+    def __init__(self, data_dir, input_transform=None, input_channels=None):
         self.data_dir = data_dir
         self.input_transform = input_transform
+        self.input_channels = input_channels
         self._graphs_features = []
         self.num_nodes = 0
         self._adj_matrix = None
@@ -57,16 +60,28 @@ class BoneDataset(Dataset):
         density = density[..., np.newaxis]
 
         graphs_features = torch.tensor(np.concatenate((graphs_features, density), axis=-1))
+
+        if self.input_channels is not None:
+            graphs_features = graphs_features[..., self.input_channels]
+
         return graphs_features
 
 
     def process_data(self):
         self._graphs_features, vertices, edges = self.get_graphs()
         self.num_nodes = len(vertices)
-        graph = dgl.DGLGraph()
+        #graph = dgl.DGLGraph()
         src, dst = zip(*edges)
-        graph.add_edges(src, dst)
-        self.adj_matrix = graph.adj()
+        #graph.add_edges(src, dst)
+        self.edge_indices = torch.stack([torch.tensor(src), torch.tensor(dst)], dim=0)
+        # Convert to scipy sparse adjacency matrix
+
+        if torch.cuda.is_available():
+            self.edge_indices = self.edge_indices.cuda()
+
+        # print("self.edge_indices ", self.edge_indices.device)
+        # exit()
+        self.adj_matrix = to_torch_sparse_tensor(self.edge_indices)
 
 
     def __getitem__(self, idx):
@@ -81,6 +96,8 @@ class BoneDataset(Dataset):
 
         if self.input_transform is not None:
             graphs = self.input_transform(graphs)
+
+        graphs = Data(x=graphs.float(), edge_index=self.edge_indices)
 
         return graphs
 

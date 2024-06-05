@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from auxiliary_functions import extract
-
+from models.auxiliary_functions import extract
+from torch_geometric.data import Data
 
 
 class DiffusionModel(nn.Module):
@@ -35,14 +35,15 @@ class DiffusionModel(nn.Module):
 
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
 
-    def forward(self, x, noise=None):
+    def forward(self, data, noise=None):
         """
         :param x: graph data
         :return:
         """
-        batch_size = x.shape[0]
+
+        #batch_size = x.shape[0]
         if noise is None:
-            noise = torch.randn_like(x)
+            noise = torch.randn_like(data.x)
 
         #print("x device ", x.device)
 
@@ -52,7 +53,7 @@ class DiffusionModel(nn.Module):
         #
         # print("self.noise_scheduler.num_timesteps ", self.noise_scheduler.num_timesteps)
 
-        timestamp = torch.randint(0, self.noise_scheduler.num_timesteps, (1,), device=x.device).long()
+        timestamp = torch.randint(0, self.noise_scheduler.num_timesteps, (1,), device=data.x.device).long()
 
         # print("t.shape ", t.shape)
         # print("t ", t)
@@ -63,13 +64,15 @@ class DiffusionModel(nn.Module):
 
         #print("x ", x)
 
-        x_noised = self.q_sample(x, timestamp, noise=noise)
+        x_noised = self.q_sample(data.x, timestamp, noise=noise)
+
+        data.x = x_noised
 
         # print("x noised ", x_noised)
         # print("timestamp ", timestamp)
         # print("mean noise ", torch.mean(noise))
 
-        predicted_noise = self.model(x_noised, timestamp)
+        predicted_noise = self.model(data, timestamp)
 
         # print("noise shape ", noise.shape)
         # print("predicted noise shape", predicted_noise.shape)
@@ -80,7 +83,7 @@ class DiffusionModel(nn.Module):
 
         return noise, predicted_noise
 
-    def p_samples(self, x, timestamp: int):
+    def p_samples(self, x, timestamp, edge_indices=None):
         """
         This method is used during the backward diffusion process
         :param x:
@@ -101,9 +104,15 @@ class DiffusionModel(nn.Module):
             self.noise_scheduler.posterior_variance = self.noise_scheduler.posterior_variance.cuda()
 
         # print("p sample x shape ", x.shape)
-        # print("batched timestamps ", batched_timestamps.device)
+        # print("batched timestamps ", batched_timestamps.shape)
+        # exit()
 
-        preds = self.model(x, batched_timestamps)
+        if edge_indices is not None:
+            data = Data(x=torch.squeeze(x.float(), dim=0), edge_index=edge_indices)
+        else:
+            data = torch.squeeze(x.float(), dim=0)
+
+        preds = self.model(data, batched_timestamps)
 
         #preds = preds.permute(2, 0, 1) # (batch size, num vertices, num attrs)
 
@@ -136,7 +145,7 @@ class DiffusionModel(nn.Module):
             return predicted_mean + torch.sqrt(posterior_variance) * noise
 
     @torch.inference_mode()
-    def sample(self, batch_size, inverse_transform=None, return_all_timesteps=None):
+    def sample(self, batch_size, inverse_transform=None,  dataset=None, return_all_timesteps=None):
         #print("self.model.adj_matrix.shape ", self.model.adj_matrix.shape)
         shape = (batch_size, self.model.adj_matrix.shape[0], self.model.num_node_attrs)
 
@@ -149,10 +158,12 @@ class DiffusionModel(nn.Module):
 
         print("graphs device ", graphs.device)
 
+        edge_indices = dataset.edge_indices if dataset is not None else None
+
         # imgs = [img]
 
         for t in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), total=self.noise_scheduler.num_timesteps):
-            graphs = self.p_samples(graphs, t)
+            graphs = self.p_samples(graphs, t, edge_indices=edge_indices)
             # imgs.append(img)
 
         print("graphs ", graphs)

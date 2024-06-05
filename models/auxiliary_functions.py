@@ -39,8 +39,9 @@ class NormalizeData():
         #self.output_quantiles = []
 
     def normalize_input(self, data):
-        data = (data - self.input_mean) / self.input_std
-        return torch.squeeze(data)
+        data = (data - torch.squeeze(self.input_mean)) / torch.squeeze(self.input_std)
+        return data
+
 
     def normalize_output(self, data):
         raise NotImplementedError
@@ -328,14 +329,16 @@ def power_10_all_data(data):
     return output_data
 
 
-def get_mean_std(data_loader, output_iqr=[]):
-    running_sum = torch.zeros((1, 1, 4))
-    running_sum_squares = torch.zeros((1, 1, 4))
+def get_mean_std(data_loader, output_iqr=[], input_channels=None):
+
+    running_sum = torch.zeros((1, 1, len(input_channels)))
+    running_sum_squares = torch.zeros((1, 1, len(input_channels)))
     num_values = 0
-    for node_features in data_loader:
-        running_sum += torch.sum(node_features, dim=(0, 1), keepdim=True)
-        running_sum_squares += torch.sum(node_features ** 2, dim=(0, 1), keepdim=True)
-        num_values += (node_features.shape[0] * node_features.shape[1])  # add batch size * num vertices
+    for data in data_loader:
+        node_features = data.x
+        running_sum += torch.sum(node_features, dim=(0), keepdim=True)
+        running_sum_squares += torch.sum(node_features ** 2, dim=(0), keepdim=True)
+        num_values += node_features.shape[0]# * node_features.shape[1])  # add batch size * num vertices
 
     mean = running_sum / num_values
     std = (running_sum_squares / num_values - (mean ** 2)) ** 0.5

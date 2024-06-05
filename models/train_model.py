@@ -5,7 +5,6 @@ import logging
 import joblib
 import copy
 import torch
-import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -17,7 +16,6 @@ import yaml
 import shutil
 import numpy as np
 import torch.nn.functional as F
-import torchvision.transforms as transforms
 import torch.optim as optim
 from torch.optim import lr_scheduler
 # #from torch.utils.tensorboard import SummaryWriter
@@ -26,9 +24,12 @@ from models.auxiliary_functions import get_mean_std, log_data, exp_data, quantil
 # from metamodel.cnn.visualization.visualize_data import plot_samples, plot_dataset
 from datasets.dataset_preprocessing import prepare_dataset, get_inverse_transform
 from models.diffusion_model import DiffusionModel
-from gnn_models import GNN
+from models.gnn_models import GNN
 from models.schedulers import NoiseScheduler
+from torch_geometric.data import DataLoader
 
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+#os.environ["CUDA_VISIBLE_DEVICES"]=""
 
 def validate(model, validation_loader, loss_fn=nn.MSELoss(), acc_fn=nn.MSELoss(), use_cuda=False):
     """
@@ -84,7 +85,7 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
         # inputs = inputs.float()
         # targets = targets.float()
-        graphs = graphs.float()
+        #graphs = graphs.float()
         optimizer.zero_grad()
 
         #print("graphs[0] ", graphs[0])
@@ -95,8 +96,8 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
         # print("noise shape", noise.shape)
         # print("predicted noise shape", predicted_noise.shape)
-        print("noise ", noise[0])
-        print("predicted noise ", predicted_noise[0])
+        #print("noise ", noise[0])
+        #print("predicted noise ", predicted_noise[0])
 
         loss = loss_fn(noise, predicted_noise)
 
@@ -116,7 +117,7 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
 
 def objective(trial, trials_config, train_loader, validation_loader):
-    best_vloss = 1_000_000.
+    best_loss = 1_000_000.
     lr = trial.suggest_categorical("lr", trials_config["lr"])
     batch_size_train = trial.suggest_categorical("batch_size_train", trials_config["batch_size_train"])
     batch_size_sample = trial.suggest_categorical("batch_size_sample", trials_config["batch_size_sample"])
@@ -132,7 +133,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
         beta_scheduler_type = trials_config["beta_scheduler_type"]
     if "scheduler_kwargs" in trials_config:
         scheduler_kwargs = trials_config["scheduler_kwargs"]
-
 
     loss_function = ["MSE", []]
     if "loss_function" in trials_config:
@@ -160,13 +160,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
         print("config batch size train", config["batch_size_train"])
 
-        data_loader = torch.utils.data.DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
-        # validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"],
-        #                                                 shuffle=False)
-        # test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
+        data_loader = DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
 
-    # plot_samples(train_loader, n_samples=25)
-    # exit()
 
     optimizer_name = "AdamW"
     if "optimizer_name" in trials_config:
@@ -184,13 +179,19 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ##################################
     if "gnn_config" in trials_config:
         gnn_config = trial.suggest_categorical("gnn_config", trials_config["gnn_config"])
-    num_node_attrs = 4
-    gnn_model = GNN(num_node_attrs=num_node_attrs, adj_matrix=dataset.adj_matrix, gnn_config=gnn_config)
+
+    num_node_attrs = trials_config["num_node_attrs"]
+
+    gnn_kwargs = {'num_node_attrs':num_node_attrs, 'adj_matrix':dataset.adj_matrix, 'edge_indices': dataset.edge_indices, 'gnn_config':gnn_config}
+    gnn_model = GNN(**gnn_kwargs)
 
     #######################
     ### Noise scheduler ###
     #######################
-    noise_scheduler = NoiseScheduler(beta_scheduler_type=beta_scheduler_type, num_timesteps=trials_config["num_timesteps"], scheduler_kwargs=scheduler_kwargs)
+    noise_scheduler_kwargs = {'beta_scheduler_type':beta_scheduler_type,
+                              'num_timesteps':trials_config["num_timesteps"],
+                              'scheduler_kwargs': scheduler_kwargs}
+    noise_scheduler = NoiseScheduler(**noise_scheduler_kwargs)
 
     #######################
     ### Diffusion model ###
@@ -215,9 +216,15 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     print("optimizer ", optimizer)
 
-    trial.set_user_attr("model_class", diff_model.__class__)
+    trial.set_user_attr("diff_model_class", diff_model.__class__)
+    trial.set_user_attr("diff_model_name", diff_model._name)
+    trial.set_user_attr("gnn_model_class", gnn_model.__class__)
+    trial.set_user_attr("gnn_model_name", gnn_model._name)
+    trial.set_user_attr("gnn_config", gnn_config)
+    trial.set_user_attr("num_node_attrs", num_node_attrs)
+    #trial.set_user_attr("gnn_model_kwargs", gnn_kwargs)
+    trial.set_user_attr("noise_scheduler_kwargs", noise_scheduler_kwargs)
     trial.set_user_attr("optimizer_class", optimizer.__class__)
-    trial.set_user_attr("model_name", diff_model._name)
     trial.set_user_attr("optimizer_kwargs", optimizer_kwargs)
     trial.set_user_attr("loss_fn", loss_fn)
     trial.set_user_attr("trials_config", trials_config)
@@ -226,7 +233,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     start_time = time.time()
     avg_loss_list = []
     avg_vloss_list = []
-    avg_vloss, avg_loss = best_vloss, best_vloss
+    avg_loss = best_loss
     best_epoch = 0
     model_state_dict = {}
     optimizer_state_dict = {}
@@ -252,7 +259,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
                                             gamma=trial_scheduler["gamma"])
 
 
-    inverse_transform = get_inverse_transform(study)
+    #inverse_transform = get_inverse_transform(study)
 
     for epoch in range(config["num_epochs"]):
         #try:
@@ -262,35 +269,35 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
         diff_model.train(False)
         # if len(validation_set) == 0:
-        avg_vloss = 0
-        avg_vacc = 0
+        #avg_vloss = 0
+        #avg_vacc = 0
         # else:
         #     avg_vloss, avg_vacc = validate(diff_model, validation_loader, loss_fn=loss_fn, use_cuda=use_cuda)   # Evaluate the model
 
         # sample
         #samples = diff_model.sample(batch_size=batch_size_sample, inverse_transform=inverse_transform)
-
-        #print("samples ", samples)
+        #print("samples ", samples.shape)
 
         if scheduler is not None:
-            scheduler.step(avg_vloss)
+            scheduler.step(avg_loss)
             print("scheduler lr: {}".format(scheduler._last_lr))
 
         avg_loss_list.append(avg_loss)
-        avg_vloss_list.append(avg_vloss)
+        #avg_vloss_list.append(avg_vloss)
 
-        print("epoch: {}, LOSS train: {}, val: {}, ACC val: {}".format(epoch, avg_loss, avg_vloss, avg_vacc))
+        print("epoch: {}, LOSS train: {}".format(epoch, avg_loss))
 
-        if avg_vloss < best_vloss:
-            best_vloss = avg_vloss
+        if avg_loss < best_loss:
+            best_loss = avg_loss
             best_epoch = epoch
+            print("best epoch ", best_epoch)
 
             model_state_dict = diff_model.state_dict()
             if train:
                 optimizer_state_dict = optimizer.state_dict()
 
         # For pruning (stops trial early if not promising)
-        trial.report(avg_vloss, epoch)
+        trial.report(avg_loss, epoch)
         # Handle pruning based on the intermediate value.
         # if trial.should_prune():
         #     raise optuna.exceptions.TrialPruned()
@@ -298,8 +305,15 @@ def objective(trial, trials_config, train_loader, validation_loader):
         #    print(str(e))
         #    return avg_vloss
 
+
     #for key, value in trial.params.items():
     #    model_path += "_{}_{}".format(key, value)
+
+
+    gnn_model.adj_matrix = None
+
+
+
 
     model_path = os.path.join(output_dir, model_path)
 
@@ -312,13 +326,12 @@ def objective(trial, trials_config, train_loader, validation_loader):
         'training_time': time.time() - start_time,
     }, model_path)
 
-    return best_vloss
+    return best_loss
 
 def load_trials_config(path_to_config):
     with open(path_to_config, "r") as f:
         trials_config = yaml.load(f, Loader=yaml.FullLoader)
     return trials_config
-
 
 
 if __name__ == '__main__':
@@ -378,6 +391,7 @@ if __name__ == '__main__':
     # Optuna params
     num_trials = trials_config["num_trials"]
 
+    print("use cuda ", use_cuda)
     device = torch.device("cuda" if torch.cuda.is_available() and use_cuda else "cpu")
     print("device ", device)
     print("config seed ", config["seed"])
@@ -408,9 +422,7 @@ if __name__ == '__main__':
     train_loader, validation_loader = None, None
     if "n_train_samples" not in config or not isinstance(config["n_train_samples"], (list, np.ndarray)):
         dataset = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
-        data_loader = torch.utils.data.DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
-        #validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
-        #test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
+        data_loader = DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
 
     def obj_func(trial):
         return objective(trial, trials_config, train_loader, validation_loader)
