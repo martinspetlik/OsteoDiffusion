@@ -8,6 +8,70 @@ from torch_geometric.nn.models import GraphUNet
 from torch_geometric.data import Data
 
 
+class GNNLayerChebConvRes(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 K,
+                 hidden_t):
+        super().__init__()
+
+        # print('hidden_X: {}, hidden_t: {}'.format(hidden_X, hidden_t))
+
+        self.init_conv = ChebConv(in_channels=in_channels, out_channels=in_channels, K=2)
+
+        self.chebconv_1 = ChebConv(in_channels=in_channels, out_channels=4, K=3)
+        self.block_gelu = nn.GELU()
+        self.chebconv_2 = ChebConv(in_channels=4, out_channels=1, K=3)
+
+        self.residual_conv = ChebConv(in_channels=in_channels, out_channels=in_channels, K=1)
+
+
+        self.mlp = (
+            nn.Sequential(nn.GELU(), nn.Linear(hidden_t, in_channels))
+        )
+
+        # self.update_X = nn.Sequential(
+        #     nn.Linear(out_channels + hidden_t, out_channels),
+        #     nn.ReLU(),
+        #     # nn.LayerNorm(hidden_X),
+        #     # nn.Dropout(dropout)
+        # )
+
+    def forward(self, A, data, h_t, batch):
+
+        time_embedding = self.mlp(h_t)
+
+        h_X = data.x.float()
+        edge_index = data.edge_index
+
+        #print("forward input h_X.shape ", h_X.shape)
+
+        h_X = self.init_conv(h_X, edge_index, batch=batch)
+
+        h_X = h_X + time_embedding
+
+
+        h_X = self.chebconv_1(h_X, edge_index, batch=batch)
+        h_X = self.block_gelu(h_X)
+        h_X = self.chebconv_2(h_X, edge_index, batch=batch)
+
+        res_h_X = self.residual_conv(data.x.float(), edge_index)
+
+
+        h_X = h_X + res_h_X
+
+
+
+        #print("h_X.shape ", h_X.shape)
+
+
+
+        return Data(x=h_X.float(), edge_index=edge_index)
+        # return h_X
+
+
+
 class GNNLayerChebConv(nn.Module):
     def __init__(self,
                  in_channels,
@@ -21,6 +85,10 @@ class GNNLayerChebConv(nn.Module):
         self.chebconv = ChebConv(in_channels=in_channels, out_channels=out_channels, K=K)
 
         #self.edge_indices = edge_indices
+
+        self.mlp = (
+            nn.Sequential(nn.GELU(), nn.Linear(hidden_t, in_channels))
+        )
 
         self.update_X = nn.Sequential(
             nn.Linear(out_channels + hidden_t, out_channels),
@@ -55,6 +123,8 @@ class GNNLayerChebConv(nn.Module):
         #
         # #print("A ", type(A))
 
+        time_embedding = self.mlp(h_t)
+
         h_X = data.x.float()
         #print("h_x.shape ", h_X.shape)
         edge_index = data.edge_index
@@ -81,6 +151,9 @@ class GNNLayerChebConv(nn.Module):
         #print("h t expand shape", h_t_expand.shape)
 
         h_aggr_X = torch.cat([h_aggr_X, h_t_expand], dim=1).permute(2, 0, 1)
+
+        #print("h_aggr_X to update X shape ", h_aggr_X.shape)
+
 
         h_X = self.update_X(h_aggr_X)
         #h_Y = self.update_Y(h_aggr_Y)
@@ -212,6 +285,7 @@ class GNNTower(nn.Module):
 
         sinu_pos_emb = SinusoidalPosEmb(sin_emb_dim, theta=sin_emb_theta)
         time_dim = hidden_t_embd #sin_emb_dim * 4
+
         self.mlp_in_t = nn.Sequential(
             sinu_pos_emb,
             nn.Linear(sin_emb_dim, time_dim),
@@ -248,6 +322,12 @@ class GNNTower(nn.Module):
                                              K=layer_config["K"],
                                              hidden_t=hidden_t_embd)
 
+            elif layer_config["name"] == "GNNLayerChebConvRes":
+                gnn_layer = GNNLayerChebConvRes(in_channels=layer_config["in_channels"],
+                                             out_channels=layer_config["out_channels"],
+                                             K=layer_config["K"],
+                                             hidden_t=hidden_t_embd)
+
                 hidden_cat_gnn += layer_config["out_channels"]
 
             self.gnn_layers.append(gnn_layer)
@@ -268,6 +348,12 @@ class GNNTower(nn.Module):
             nn.Linear(hidden_cat, num_attrs_X)
         )
 
+        self.out_res = GNNLayerChebConvRes(in_channels=layer_config["in_channels"],
+                                             out_channels=layer_config["out_channels"],
+                                             K=layer_config["K"],
+                                             hidden_t=hidden_t_embd)
+
+
     def forward(self, data, t):
         # print("GNNTower forward")
         t = t.float()
@@ -275,7 +361,7 @@ class GNNTower(nn.Module):
         h_X = Data(x=data.x.float(), edge_index=data.edge_index)
         h_t = self.mlp_in_t(t)#.unsqueeze(0)
 
-        h_X_list = [h_X.x.float()]
+        #h_X_list = [h_X.x.float()]
         for gnn in self.gnn_layers:
             #print("data.batch ", data.batch)
 
@@ -288,29 +374,72 @@ class GNNTower(nn.Module):
 
             #h_X_list.append(h_X.x.float())
             #print("h_X.x.float().shape ", h_X.x.float().shape)
-            h_X_list.append(h_X.x.float())
+            #h_X_list.append(h_X.x.float())
 
 
         ###
         # Crucial part - it was not learning properly without output MLP
         ###
-        h_t = h_t.expand(h_X.x.size(0), -1)
-
-        #print("h_X_list ", h_X_list)
-
-        #print("h_t.shape ", h_t.shape)
-        #h_t = h_t.unsqueeze(-1).expand(*h_t.shape, batch_size)
-        #h_t = h_t.unsqueeze(-1).expand(*h_t.shape)
-        h_cat = torch.cat(h_X_list + [h_t], dim=1)
-        h_cat = torch.squeeze(h_cat)
+        # h_t = h_t.expand(h_X.x.size(0), -1)
+        # #print("h_X_list ", h_X_list)
+        # #print("h_t.shape ", h_t.shape)
+        # #h_t = h_t.unsqueeze(-1).expand(*h_t.shape, batch_size)
+        # #h_t = h_t.unsqueeze(-1).expand(*h_t.shape)
+        # h_cat = torch.cat(h_X_list + [h_t], dim=1)
+        # h_cat = torch.squeeze(h_cat)
 
         #print("h_cat.dtype ", h_cat.dtype)
 
         #print("h_cat shape ", h_cat.shape)
 
+        #print("h_X for out res ", h_X.x.float().shape)
+        h_X = self.out_res(self.adj_matrix, h_X, h_t, batch=data.batch)
 
-        #return h_X
-        return self.mlp_out(h_cat)
+
+        return h_X.x.float()
+        return #self.mlp_out(h_cat)
+
+    # def forward(self, data, t):
+    #     # print("GNNTower forward")
+    #     t = t.float()
+    #     #h_X = x #self.mlp_in_X(x)
+    #     h_X = Data(x=data.x.float(), edge_index=data.edge_index)
+    #     h_t = self.mlp_in_t(t)#.unsqueeze(0)
+    #
+    #     h_X_list = [h_X.x.float()]
+    #     for gnn in self.gnn_layers:
+    #         #print("data.batch ", data.batch)
+    #
+    #         #h_X = gnn(h_X.x.float(), h_X.edge_index, batch=data.batch)
+    #         #h_X = Data(x=h_X.float(), edge_index=data.edge_index)
+    #
+    #         h_X = gnn(self.adj_matrix, h_X, h_t, batch=data.batch)
+    #
+    #         #print("h_X from UNet ", h_X.x.shape)
+    #
+    #         #h_X_list.append(h_X.x.float())
+    #         #print("h_X.x.float().shape ", h_X.x.float().shape)
+    #         h_X_list.append(h_X.x.float())
+    #
+    #
+    #     ###
+    #     # Crucial part - it was not learning properly without output MLP
+    #     ###
+    #     h_t = h_t.expand(h_X.x.size(0), -1)
+    #     #print("h_X_list ", h_X_list)
+    #     #print("h_t.shape ", h_t.shape)
+    #     #h_t = h_t.unsqueeze(-1).expand(*h_t.shape, batch_size)
+    #     #h_t = h_t.unsqueeze(-1).expand(*h_t.shape)
+    #     h_cat = torch.cat(h_X_list + [h_t], dim=1)
+    #     h_cat = torch.squeeze(h_cat)
+    #
+    #     #print("h_cat.dtype ", h_cat.dtype)
+    #
+    #     #print("h_cat shape ", h_cat.shape)
+    #
+    #
+    #     #return h_X
+    #     return self.mlp_out(h_cat)
 
 
 class GNN(nn.Module):

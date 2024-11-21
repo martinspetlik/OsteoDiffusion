@@ -169,7 +169,7 @@ class DiffusionModel(nn.Module):
         print("graphs ", graphs)
 
         if inverse_transform is not None:
-            graphs = inverse_transform(graphs)
+            inv_graphs = inverse_transform(graphs)
 
         print("inverse transform graphs ", graphs)
-        return graphs
+        return inv_graphs, graphs

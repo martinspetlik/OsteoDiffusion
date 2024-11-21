@@ -4,13 +4,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import QuantileTransformer, RobustScaler
 
-def extract(
-    constants: torch.Tensor, timestamps: torch.Tensor, shape: int
-) -> torch.Tensor:
-    batch_size = timestamps.shape[0]
-    timestamps = torch.squeeze(timestamps)
-    out = constants.gather(-1, timestamps)
-    return out.reshape(batch_size, *((1,) * (len(shape) - 1))).to(timestamps.device)
+# def extract(
+#     constants: torch.Tensor, timestamps: torch.Tensor, shape: int
+# ) -> torch.Tensor:
+#     batch_size = timestamps.shape[0]
+#     print("batch size ", batch_size)
+#     #timestamps = torch.squeeze(timestamps)
+#     # print("time stamps shape ", timestamps.shape)
+#     out = constants.gather(-1, timestamps)
+#     print("out ", out.shape)
+#
+#     return out.reshape(batch_size, *((1,) * (len(shape) - 1))).to(timestamps.device)
+
+def extract(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
 
 class QuantileTRF():
     def __init__(self):
@@ -25,7 +35,6 @@ class QuantileTRF():
 
     def quantile_inv_transform_out(self, passed_data):
         return quantile_inv_transform_trf(passed_data, self.quantile_trfs_out)
-
 
 
 class NormalizeData():
@@ -96,7 +105,6 @@ def log10_all_data(data):
         preprocessed_positive_k_xy = torch.log10(flatten_data[positive_data_indices])
 
 
-
         flatten_data[positive_data_indices] = preprocessed_positive_k_xy
         flatten_data[negative_data_indices] = preprocessed_negative_k_xy
 
@@ -151,23 +159,42 @@ def arcsinh_data(data):
     return output_data
 
 def log_data(data):
+    #print("data.shape ", data.shape)
     output_data = torch.empty((data.shape))
-    if data.shape[0] == 3:
-        output_data[0][...] = torch.log(data[0])
-        output_data[1][...] = data[1]
-        output_data[2][...] = torch.log(data[2])
-    elif data.shape[0] == 4:
-        output_data[0][...] = torch.log(data[0])
-        output_data[1][...] = data[1]
-        output_data[2][...] = torch.log(data[2])
-        output_data[3][...] = data[3]
-    elif data.shape[0] < 3:
-        for i in range(data.shape[0]):
-            output_data[i][...] = torch.log(data[i])
-    else:
-        raise NotImplementedError("Log transformation implemented for 2D case only")
+
+    for i in range(data.shape[1]):
+        output_data[:, i] = np.log(data[:, i])
+
+    nan_values = output_data[torch.isnan(output_data)]
+    data_values = data[torch.isnan(output_data)]
+
+    if len(nan_values) > 0:
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+        axes.hist(torch.squeeze(data), bins=100, density=True, label="density")
+        fig.legend()
+        plt.show()
+
+        print("nan values ", nan_values)
+        print("data values ", data_values)
 
     return output_data
+    # if data.shape[0] == 3:
+    #     output_data[0][...] = torch.log(data[0])
+    #     output_data[1][...] = data[1]
+    #     output_data[2][...] = torch.log(data[2])
+    # elif data.shape[0] == 4:
+    #     output_data[0][...] = torch.log(data[0])
+    #     output_data[1][...] = data[1]
+    #     output_data[2][...] = torch.log(data[2])
+    #     output_data[3][...] = data[3]
+    # elif data.shape[0] < 3:
+    #     for i in range(data.shape[0]):
+    #         output_data[i][...] = torch.log(data[i])
+    # else:
+    #     raise NotImplementedError("Log transformation implemented for 2D case only")
+
+    #return output_data
 
 
 def log10_data(data):
@@ -189,18 +216,22 @@ def log10_data(data):
 
     return output_data
 
+
 def quantile_transform_fit(data, indices=[], transform_type=None):
     transform_obj = []
-    for i in range(data.shape[0]):
+    #print("indices ", indices)
+    #print("data.shape ", data.shape)
+
+    for i in range(data.shape[1]):
         if i in indices:
             if transform_type == "RobustScaler":
                 transformer = RobustScaler()
             else:
                 transformer = QuantileTransformer(n_quantiles=10000, random_state=0, output_distribution="normal")
-            if torch.is_tensor(data[i]):
-                transform_obj.append(transformer.fit(data[i].reshape(-1, 1).numpy()))
+            if torch.is_tensor(data[..., i]):
+                transform_obj.append(transformer.fit(data[..., i].reshape(-1, 1).numpy()))
             else:
-                transform_obj.append(transformer.fit(data[i].reshape(-1, 1)))
+                transform_obj.append(transformer.fit(data[..., i].reshape(-1, 1)))
         else:
             transform_obj.append(None)
     return transform_obj
@@ -208,13 +239,35 @@ def quantile_transform_fit(data, indices=[], transform_type=None):
 
 def quantile_transform_trf(data, quantile_trfs):
     trf_data = torch.empty((data.shape))
-    for i in range(data.shape[0]):
+
+    # print("quantile_trfs ", quantile_trfs)
+    # print("data.shape ", data.shape)
+    #
+    # import matplotlib.pyplot as plt
+    # density = np.squeeze(data.cpu().numpy())
+    # fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+    # axes.hist(density, bins=100, density=True, color="blue", label="density")
+    # fig.legend()
+    # plt.show()
+
+    for i in range(data.shape[1]):
         if quantile_trfs[i] is not None:
-            transformed_data = quantile_trfs[i].transform(data[i].reshape(-1, 1).numpy())
-            trf_data[i][...] = torch.from_numpy(np.reshape(transformed_data, data[i].shape))
+            transformed_data = quantile_trfs[i].transform(data[..., i].reshape(-1, 1).numpy())
+            # print("transformed data shape ", transformed_data.shape)
+            # print("torch.from_numpy(np.reshape(transformed_data, data[..., i].shape))", torch.from_numpy(np.reshape(transformed_data, data[..., i].shape)).shape)
+            # #trf_data[...][i] = torch.from_numpy(transformed_data)
+            trf_data = torch.from_numpy(transformed_data)
         else:
-            trf_data[i][...] = data[i]
+            trf_data[...][i] = data[..., i]
+
+    # import matplotlib.pyplot as plt
+    # density = np.squeeze(trf_data.cpu().numpy())
+    # fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+    # axes.hist(density, bins=100, density=True, color="green", label="density")
+    # fig.legend()
+    # plt.show()
     return trf_data
+
 
 def quantile_inv_transform_trf(data, quantile_trfs):
     trf_data = torch.empty((data.shape))
@@ -334,11 +387,50 @@ def get_mean_std(data_loader, output_iqr=[], input_channels=None):
     running_sum = torch.zeros((1, 1, len(input_channels)))
     running_sum_squares = torch.zeros((1, 1, len(input_channels)))
     num_values = 0
+    feature_means = []
+    feature_stds = []
     for data in data_loader:
         node_features = data.x
+
+        #print("node features shape ", node_features.shape)
+
+        #
+        # import matplotlib.pyplot as plt
+        # fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+        # axes.hist(torch.squeeze(node_features), bins=100, density=True, label="density")
+        # fig.legend()
+        # plt.show()
+
+        # nan_values = node_features[torch.isnan(node_features)]
+        #
+        # if len(nan_values) > 0:
+        #     import matplotlib.pyplot as plt
+        #     fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+        #     axes.hist(torch.exp(torch.squeeze(node_features)), bins=100, density=True, label="density")
+        #     fig.legend()
+        #     plt.show()
+        #
+
+        #    #print("nan values ", nan_values)
+
+        feature_means.append(node_features.mean(dim=0))
+        feature_stds.append(node_features.std(dim=0))
+
+
         running_sum += torch.sum(node_features, dim=(0), keepdim=True)
         running_sum_squares += torch.sum(node_features ** 2, dim=(0), keepdim=True)
         num_values += node_features.shape[0]# * node_features.shape[1])  # add batch size * num vertices
+
+        #print("runnig sum ", running_sum)
+
+    print("feature means ", feature_means)
+    print("feature stds ", feature_stds)
+
+
+    overall_mean = torch.stack(feature_means).mean(dim=0)
+    overall_std = torch.stack(feature_stds).mean(dim=0)
+
+    print("overall mean: {} std: {}".format(overall_mean, overall_std))
 
     mean = running_sum / num_values
     std = (running_sum_squares / num_values - (mean ** 2)) ** 0.5
@@ -350,6 +442,64 @@ def get_mean_std(data_loader, output_iqr=[], input_channels=None):
     #
     # print("f features mean ", f_features_mean)
     # print("f features std ", f_features_std)
+
+    # node_features_list = []
+    # for data in data_loader:
+    #     node_features_list.append(data.x.numpy())
+    #
+    # # Step 2: Convert collected node features to numpy array
+    # all_node_features = np.concatenate(node_features_list, axis=0)
+    #
+    # # Step 3: Apply RobustScaler to the numpy array
+    # scaler = RobustScaler()
+    # scaler.fit(all_node_features)
+    # import matplotlib.pyplot as plt
+    #
+    # qt = QuantileTransformer(output_distribution='normal')
+    # print("all node features ", all_node_features.shape)
+    # transformed_node_features = qt.fit_transform(all_node_features)
+
+    # Step 4: Replace original node features with transformed features in PyTorch Geometric Data objects
+    # for data, transformed_features in zip(data_loader,
+    #                                       np.split(transformed_node_features, [len(data.x) for data in data_loader])):
+    #     data.x = torch.tensor(transformed_features)
+    #
+    #     print("transformed_features ", transformed_features)
+    #
+    #     fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+    #     axes.hist(np.squeeze(data.x.cpu().numpy()), bins=100, density=True, color="green", label="density")
+    #     fig.legend()
+    #     plt.show()
+    # #scaled_node_features = scaler.transform(all_node_features)
+
+    # for data in data_loader:
+    #
+    #     density = np.squeeze(data.x.cpu().numpy())
+    #
+    #     fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+    #     axes.hist(density, bins=100, density=True, color="red", label="density")
+    #     fig.legend()
+    #     plt.show()
+    #
+    #     fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+    #     axes.hist(np.squeeze(qt.transform(data.x)), bins=100, density=True, color="green", label="density")
+    #     fig.legend()
+    #     plt.show()
+    #     data.x = (data.x - overall_mean) / overall_std
+    #
+    #     density = np.squeeze(data.x.cpu().numpy())
+    #     fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+    #     axes.hist(density, bins=100, density=True, color="blue", label="density normalized")
+    #     fig.legend()
+    #     plt.show()
+    #
+    #     print(data.x.mean(dim=0))  # Should be close to 0
+    #     print(data.x.std(dim=0))  # Should be close to 1
+    #
+    #     res = scaler.transform(data.x)
+    #     print("res np.mean: {}, std: {}".format(np.mean(res), np.std(res)))
+    #
+    # exit()
 
     return mean, std
 
