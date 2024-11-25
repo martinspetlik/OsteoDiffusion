@@ -216,7 +216,11 @@ def _split_dataset(dataset, config, n_train_samples):
 
 
 def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=None):
-    dataset = BoneDatasetCT(data_dir=data_dir)
+    data_file_name = None
+    if "data_file_name" in config:
+        data_file_name = config["data_file_name"]
+
+    dataset = BoneDatasetCT(data_dir=data_dir, data_file_name=data_file_name)
 
     n_train_samples = None
     if "n_train_samples" in config and config["n_train_samples"] is not None:

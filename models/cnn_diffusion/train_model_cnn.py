@@ -196,18 +196,13 @@ def objective(trial, trials_config, train_loader, validation_loader):
         #                                                                serialize_path=output_dir)
         # else:
 
-        train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir,
-                                                              serialize_path=output_dir)
+        train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
 
-        print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set),
-                                                                            len(test_set)))
+        print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set), len(test_set)))
 
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
-
-        validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"],
-                                                        shuffle=False)
+        validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
-
 
     optimizer_name = "AdamW"
     if "optimizer_name" in trials_config:
@@ -228,12 +223,27 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     num_node_attrs = trials_config["num_node_attrs"]
 
+    ####
+    ## SimpleUNet
+    ####
+    model_class_name = "SimpleUNet"
+    if "model_class_name" in trials_config:
+        model_class_name = trials_config["model_class_name"]
 
-    cnn_kwargs = {'dim': 32, 'channels':1}
+    if model_class_name == "SimpleUNet":
+        model_class = SimpleUNet
+    elif model_class_name == "UNet":
+        model_class = UNet
+
+    #cnn_kwargs = {'dim': 32, 'channels': 1}
     #cnn_model = UNet(**cnn_kwargs)
     #cnn_model = UNet3DMedicalDiffusion(**cnn_kwargs)
-    #cnn_model = SimpleUNet(dim=32)
-    cnn_model = UNet(dim=32)
+    cnn_model = model_class(**cnn_config)
+
+    ####
+    ## SimpleUNet
+    ####
+    #cnn_model = UNet(dim=32)
     #cnn_model =  UNet3DWithTimestep(in_channels=1, out_channels=1)
     #cnn_model = UNet3DAmir(in_channels=1, out_channels=1)
 
@@ -435,6 +445,9 @@ if __name__ == '__main__':
         config["normalize_input_indices"] = trials_config["normalize_input_indices"]
     if "normalize_output_indices" in trials_config:
         config["normalize_output_indices"] = trials_config["normalize_output_indices"]
+
+    if "data_file_name" in trials_config:
+        config["data_file_name"] = trials_config["data_file_name"]
 
     # Optuna params
     num_trials = trials_config["num_trials"]

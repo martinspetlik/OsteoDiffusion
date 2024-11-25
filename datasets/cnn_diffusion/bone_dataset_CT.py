@@ -12,16 +12,16 @@ import numpy as np
 
 
 class BoneDatasetCT(Dataset):
-    def __init__(self, data_dir, input_transform=None, input_channels=None):
+    def __init__(self, data_dir, data_file_name, input_transform=None, input_channels=None):
 
         self.data_dir = data_dir #"/mnt/database/BoneDat/derived/fields"
 
         if not os.path.exists(self.data_dir):
             raise NotADirectoryError
 
-        self._data_file_name = "lumbopelvic_masked_normed_resampled_100_100_100.npz"
-        self._data_file_name = "lumbopelvic_masked_normed_resampled_32_32_32.npz"
-        self._data_file_name = "lumbopelvic_masked_normed_local_resampled_32_32_32.npz"
+        #self._data_file_name = "lumbopelvic_masked_normed_resampled_100_100_100.npz"
+        #self._data_file_name = "lumbopelvic_masked_normed_resampled_32_32_32.npz"
+        self._data_file_name = data_file_name #"lumbopelvic_masked_normed_local_resampled_32_32_32.npz"
 
         # Values for postprocessing
         self._global_min_value = -1024.00
