@@ -432,7 +432,7 @@ class SimpleUNet(nn.Module):
         for encoder_layer in self.encoder:
             x = encoder_layer(x, time_embedding)
             unet_stack.append(x)
-            print("x shape " ,x.shape)
+            #print("x shape " ,x.shape)
 
         x = self.mid_block1(x, time_embedding)
         x = self.mid_block2(x, time_embedding)
@@ -445,7 +445,7 @@ class SimpleUNet(nn.Module):
             x = torch.cat((x, unet_stack_pop), dim=1)
 
             x = decoder_layer(x, time_embedding)
-            print("dec x shape " ,x.shape)
+            #print("dec x shape " ,x.shape)
 
         # x = torch.cat((mx2, ex2), dim=1)
         # print("cat mx2 ex2 shape ", x.shape)
