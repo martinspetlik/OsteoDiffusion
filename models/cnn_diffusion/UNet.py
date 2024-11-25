@@ -294,6 +294,8 @@ class SimpleUNet(nn.Module):
     def __init__(self, dim, in_channels=1,
                  out_channels=1,
                  init_conv_channels=8,
+                 encoder_channels=[32, 64],
+                 decoder_channels=[128, 96],
                  sinusoidal_pos_emb_theta=10000,
                  convnext_block_groups=8):
         super(SimpleUNet, self).__init__()
@@ -315,38 +317,91 @@ class SimpleUNet(nn.Module):
 
         self.init_conv = nn.Conv3d(in_channels, init_conv_channels, 3, padding=1)
 
+        self.encoder = nn.ModuleList([])
+        self.decoder = nn.ModuleList([])
 
-        # self.encoder1 = nn.Conv3d(in_channels, 64, kernel_size=3, padding=1)
-        self.encoder1 = ConvNextBlock(
-                            in_channels=init_conv_channels,
-                            out_channels=32,
-                            time_embedding_dim=time_dim,
-                            group=convnext_block_groups,
-                        )
+        for i, en_ch in enumerate(encoder_channels):
+            if i == 0:
+                print("in: {}, out: {}".format(init_conv_channels, en_ch))
+                self.encoder.append(ConvNextBlock(
+                                in_channels=init_conv_channels,
+                                out_channels=en_ch,
+                                time_embedding_dim=time_dim,
+                                group=convnext_block_groups,
+                            ))
 
-        self.encoder2 = ConvNextBlock(
-            in_channels=32,
-            out_channels=64,
-            time_embedding_dim=time_dim,
-            group=convnext_block_groups,
-        )
+            else:
+                print("in: {}, out: {}".format(encoder_channels[i-1], en_ch))
+                self.encoder.append(ConvNextBlock(
+                    in_channels=encoder_channels[i-1],
+                    out_channels=en_ch,
+                    time_embedding_dim=time_dim,
+                    group=convnext_block_groups,
+                ))
 
-        self.mid_block1 = ConvNextBlock(64, 64, time_embedding_dim=time_dim)
-        self.mid_block2 = ConvNextBlock(64, 64, time_embedding_dim=time_dim)
 
-        self.decoder1 = ConvNextBlock(
-            in_channels=128,
-            out_channels=64,
-            time_embedding_dim=time_dim,
-            group=convnext_block_groups,
-        )
 
-        self.decoder2 = ConvNextBlock(
-            in_channels=96,
-            out_channels=init_conv_channels,
-            time_embedding_dim=time_dim,
-            group=convnext_block_groups,
-        )
+
+        # # self.encoder1 = nn.Conv3d(in_channels, 64, kernel_size=3, padding=1)
+        # self.encoder1 = ConvNextBlock(
+        #                     in_channels=init_conv_channels,
+        #                     out_channels=32,
+        #                     time_embedding_dim=time_dim,
+        #                     group=convnext_block_groups,
+        #                 )
+        #
+        # self.encoder2 = ConvNextBlock(
+        #     in_channels=32,
+        #     out_channels=64,
+        #     time_embedding_dim=time_dim,
+        #     group=convnext_block_groups,
+        # )
+
+        self.mid_block1 = ConvNextBlock(en_ch, en_ch, time_embedding_dim=time_dim)
+        self.mid_block2 = ConvNextBlock(en_ch, en_ch, time_embedding_dim=time_dim)
+
+        for i, de_ch in enumerate(decoder_channels):
+            if i == 0:
+                print("in: {}, out: {}".format(de_ch, en_ch))
+                self.decoder.append(ConvNextBlock(
+                    in_channels=de_ch,
+                    out_channels=en_ch,
+                    time_embedding_dim=time_dim,
+                    group=convnext_block_groups,
+                ))
+
+            elif i == (len(decoder_channels) - 1):
+                print("in: {}, out: {}".format(de_ch, init_conv_channels))
+                self.decoder.append(ConvNextBlock(
+                    in_channels=de_ch,
+                    out_channels=init_conv_channels,
+                    time_embedding_dim=time_dim,
+                    group=convnext_block_groups,
+                ))
+
+            else:
+                print("in: {}, out: {}".format(decoder_channels[i - 1], de_ch))
+                self.decoder.append(ConvNextBlock(
+                    in_channels=decoder_channels[i - 1],
+                    out_channels=de_ch,
+                    time_embedding_dim=time_dim,
+                    group=convnext_block_groups,
+                ))
+
+
+        # self.decoder1 = ConvNextBlock(
+        #     in_channels=128,
+        #     out_channels=64,
+        #     time_embedding_dim=time_dim,
+        #     group=convnext_block_groups,
+        # )
+        #
+        # self.decoder2 = ConvNextBlock(
+        #     in_channels=96,
+        #     out_channels=init_conv_channels,
+        #     time_embedding_dim=time_dim,
+        #     group=convnext_block_groups,
+        # )
 
         # self.encoder2 = nn.Conv3d(64, 128, kernel_size=3, padding=1)
         # self.decoder1 = nn.Conv3d(128, 64, kernel_size=3, padding=1)
@@ -367,28 +422,43 @@ class SimpleUNet(nn.Module):
 
         time_embedding = time_embedding.float()
 
-        ex1 = self.encoder1(x, time_embedding)
-        print("encoder1 x.shape ", ex1.shape)
+        # ex1 = self.encoder1(x, time_embedding)
+        # print("encoder1 x.shape ", ex1.shape)
+        #
+        # ex2 = self.encoder2(ex1, time_embedding)
+        # print("encoder2 ex2.shape ", ex2.shape)
 
-        ex2 = self.encoder2(ex1, time_embedding)
-        print("encoder2 ex2.shape ", ex2.shape)
+        unet_stack = []
+        for encoder_layer in self.encoder:
+            x = encoder_layer(x, time_embedding)
+            unet_stack.append(x)
+            print("x shape " ,x.shape)
 
-        mx1 = self.mid_block1(ex2, time_embedding)
-        mx2 = self.mid_block2(mx1, time_embedding)
+        x = self.mid_block1(x, time_embedding)
+        x = self.mid_block2(x, time_embedding)
 
-        x = torch.cat((mx2, ex2), dim=1)
-        print("cat mx2 ex2 shape ", x.shape)
+        for decoder_layer in self.decoder:
+            unet_stack_pop = unet_stack.pop()
+            # print("x.shape ", x.shape)
+            # print("unet_stack_pop.shape ", unet_stack_pop.shape)
 
-        dx1 = self.decoder1(x, time_embedding)
-        print("decoder1 x.shape ", dx1.shape)
+            x = torch.cat((x, unet_stack_pop), dim=1)
 
-        x = torch.cat((dx1, ex1), dim=1)
+            x = decoder_layer(x, time_embedding)
+            print("dec x shape " ,x.shape)
 
-        dx2 = self.decoder2(x, time_embedding)
+        # x = torch.cat((mx2, ex2), dim=1)
+        # print("cat mx2 ex2 shape ", x.shape)
+        #
+        # dx1 = self.decoder1(x, time_embedding)
+        # print("decoder1 x.shape ", dx1.shape)
+        #
+        # x = torch.cat((dx1, ex1), dim=1)
+
+        #dx2 = self.decoder2(x, time_embedding)
         #print("decoder2 x.shape ", dx2.shape)
 
-        x = self.final_conv(dx2)
-        exit()
+        x = self.final_conv(x)
         return x
 
         # x = torch.cat((x, r), dim=1)
@@ -535,7 +605,6 @@ class UNet(nn.Module):
 
         x = self.mid_block1(x, t)
         x = self.mid_block2(x, t)
-
 
 
         for up1, up2, upsample in self.ups:
