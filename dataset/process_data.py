@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 typ_kosti = 'L4'
 
 if typ_kosti == "L4":
-    data_dir = "/home/martin/Documents/Bones_diff_model/data/L4"
+    data_dir = "/data/L4"
     
 
 age_data_path = os.path.join(data_dir, 'age.npy')

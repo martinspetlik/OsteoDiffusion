@@ -9,7 +9,17 @@ from models.auxiliary_functions import get_mean_std, log_data, exp_data, quantil
 from torch_geometric.data import Data, DataLoader
 
 
-def get_inverse_transform(study):
+def get_inverse_transform(study, results_dir):
+    transforms_list = []
+    if ("input_transform" in study.user_attrs and len(study.user_attrs["input_transform"]) > 0) \
+            or os.path.exists(os.path.join(results_dir, "input_transform.pkl")):
+        output_transform = joblib.load(os.path.join(results_dir, "input_transform.pkl"))
+        quantile_trf_obj = QuantileTRF()
+        quantile_trf_obj.quantile_trfs_out = output_transform
+        transforms_list.append(quantile_trf_obj.quantile_inv_transform_out)
+
+    print("transforms_list ", transforms_list)
+
     std = 1 / study.user_attrs["input_std"]
     zeros_mean = np.zeros(len(study.user_attrs["input_mean"]))
 
@@ -28,52 +38,56 @@ def get_inverse_transform(study):
 
     return transforms.Compose(transforms_list)
 
-def features_transform(config, data_dir, input_transform_list, dataset_for_transform=None):
+def features_transform(config, data_dir, input_transform_list, dataset_for_transform=None, input_channels=None):
     #################################
     ## Data for Quantile Transform ##
     #################################
     quantile_trf_obj = QuantileTRF()
     if dataset_for_transform is None:
-        dataset_for_transform = BoneDataset(data_dir=data_dir)
-    input_data = np.array([])
-    output_data = np.array([])
+        dataset_for_transform = BoneDataset(data_dir=data_dir, input_channels=input_channels)
+    input_data = []
 
     n_data_input = 1000000
-    n_data_output = 300000
+    #n_data_output = 300000
     if "input_transform" in config or "output_transform" in config:
         for index, data in enumerate(dataset_for_transform):
-            input, output = data
 
-            input = np.reshape(input, (input.shape[0], input.shape[-1] * input.shape[-2]))
-            if input.shape[-1] * input.shape[-2] * index < n_data_input:
-                if len(input_data) == 0:
-                    input_data = input
-                else:
-                    input_data = np.concatenate([input_data, input], axis=1)
+            input_data.append(data.x.numpy())
 
-            if output_data.shape[-1] < n_data_output:
-                output = np.reshape(output, (output.shape[0], 1))
-                if len(output_data) == 0:
-                    output_data = output
-                else:
-                    output_data = np.concatenate([output_data, output], axis=1)
+            # input = np.reshape(input, (input.shape[0], input.shape[-1] * input.shape[-2]))
+            # if input.shape[-1] * input.shape[-2] * index < n_data_input:
+            #     if len(input_data) == 0:
+            #         input_data = input
+            #     else:
+            #         input_data = np.concatenate([input_data, input], axis=1)
+
+            # if output_data.shape[-1] < n_data_output:
+            #     output = np.reshape(output, (output.shape[0], 1))
+            #     if len(output_data) == 0:
+            #         output_data = output
+            #     else:
+            #         output_data = np.concatenate([output_data, output], axis=1)
+
+        input_data = np.concatenate(input_data, axis=0)
+
 
     if "input_transform" in config and len(config["input_transform"]) > 0:
         quantile_trfs = quantile_transform_fit(input_data,
                                                 indices=config["input_transform"]["indices"],
                                                 transform_type=config["input_transform"]["type"])
+
         joblib.dump(quantile_trfs, os.path.join(config["output_dir"], "input_transform.pkl"))
         quantile_trf_obj.quantile_trfs_in = quantile_trfs
         input_transform_list.append(quantile_trf_obj.quantile_transform_in)
 
-    if "output_transform" in config and len(config["output_transform"]) > 0:
-        quantile_trfs_out = quantile_transform_fit(output_data,
-                                                   indices=config["output_transform"]["indices"],
-                                                   transform_type=config["output_transform"]["type"])
-        joblib.dump(quantile_trfs_out, os.path.join(config["output_dir"], "output_transform.pkl"))
-        quantile_trf_obj.quantile_trfs_out = quantile_trfs_out
-        output_transform_list.append(quantile_trf_obj.quantile_transform_out)
-    return input_transform_list, output_transform_list
+    # if "output_transform" in config and len(config["output_transform"]) > 0:
+    #     quantile_trfs_out = quantile_transform_fit(output_data,
+    #                                                indices=config["output_transform"]["indices"],
+    #                                                transform_type=config["output_transform"]["type"])
+    #     joblib.dump(quantile_trfs_out, os.path.join(config["output_dir"], "output_transform.pkl"))
+    #     quantile_trf_obj.quantile_trfs_out = quantile_trfs_out
+    #     output_transform_list.append(quantile_trf_obj.quantile_transform_out)
+    return input_transform_list#, output_transform_list
 
 
 def _append_dataset(dataset_1, dataset_2):
@@ -234,12 +248,7 @@ def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=
     # # ########################
     # # ## Quantile Transform ##
     # # ########################
-    # input_transform_list, output_transform_list = features_transform(config,
-    #                                                                  data_dir,
-    #                                                                  output_file_name,
-    #                                                                  input_transform_list,
-    #                                                                  output_transform_list)
-    #
+    input_transform_list = features_transform(config, data_dir, input_transform_list, input_channels=config["input_channels"] if "input_channels" in config else None)
 
     input_transform = transforms.Compose(input_transform_list)
 
@@ -332,39 +341,37 @@ def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=
         train_dataset.init_transform = data_init_transform
         train_dataset.input_transform = data_input_transform
 
-    # if "input_transform" in config or "output_transform" in config:
-    #     if train_dataset is not None:
-    #         train_set = train_dataset
-    #     input_transformations  = features_transform(config, data_dir, input_transformations, train_set)
-    #
-    #     if len(input_transformations) > 0:
-    #         data_input_transform = transforms.Compose(input_transformations)
-    #
-    #     dataset = TestBoneDataset(data_dir=data_dir,
-    #                          input_transform=data_input_transform,
-    #                          init_transform=data_init_transform)
-    #     dataset.shuffle(config["seed"])
-    #
-    #     train_set, validation_set, test_set = _split_dataset(dataset, config, n_train_samples)
-    #     #
-    #     # train_loader_mean_std = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"],
-    #     #                                                     shuffle=False)
-    #     # input_mean, input_std, output_mean, output_std, _ = get_mean_std(train_loader_mean_std)
-    #     # print("TRAIN SET input mean: {}, std:{}, output mean: {}, std: {}".format(input_mean, input_std, output_mean, output_std))
-    #     #
-    #     # train_loader_mean_std = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"],
-    #     #                                                     shuffle=False)
-    #     # input_mean, input_std, output_mean, output_std, _ = get_mean_std(train_loader_mean_std)
-    #     # print("VAL SET input mean: {}, std:{}, output mean: {}, std: {}".format(input_mean, input_std, output_mean,
-    #     #                                                                           output_std))
-    #     #
-    #     # train_loader_mean_std = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_train"],
-    #     #                                                     shuffle=False)
-    #     # input_mean, input_std, output_mean, output_std, _ = get_mean_std(train_loader_mean_std)
-    #     # print("TEST SET input mean: {}, std:{}, output mean: {}, std: {}".format(input_mean, input_std, output_mean,
-    #     #                                                                           output_std))
-    #     #
-    #     # exit()
+    if "input_transform" in config or "output_transform" in config:
+        input_transformations = features_transform(config, data_dir, input_transformations,
+                                                   input_channels=config["input_channels"] if "input_channels" in config else None)
+        if len(input_transformations) > 0:
+            data_input_transform = transforms.Compose(input_transformations)
+
+        dataset = BoneDataset(data_dir=data_dir,
+                             input_transform=data_input_transform,
+                              input_channels=config["input_channels"] if "input_channels" in config else None)
+        dataset.shuffle(config["seed"])
+
+        #train_set, validation_set, test_set = _split_dataset(dataset, config, n_train_samples)
+        #
+        # train_loader_mean_std = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"],
+        #                                                     shuffle=False)
+        # input_mean, input_std, output_mean, output_std, _ = get_mean_std(train_loader_mean_std)
+        # print("TRAIN SET input mean: {}, std:{}, output mean: {}, std: {}".format(input_mean, input_std, output_mean, output_std))
+        #
+        # train_loader_mean_std = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"],
+        #                                                     shuffle=False)
+        # input_mean, input_std, output_mean, output_std, _ = get_mean_std(train_loader_mean_std)
+        # print("VAL SET input mean: {}, std:{}, output mean: {}, std: {}".format(input_mean, input_std, output_mean,
+        #                                                                           output_std))
+        #
+        # train_loader_mean_std = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_train"],
+        #                                                     shuffle=False)
+        # input_mean, input_std, output_mean, output_std, _ = get_mean_std(train_loader_mean_std)
+        # print("TEST SET input mean: {}, std:{}, output mean: {}, std: {}".format(input_mean, input_std, output_mean,
+        #                                                                           output_std))
+        #
+        # exit()
 
     if study is not None:
         if train_dataset is None:
@@ -399,7 +406,6 @@ def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=
         study.set_user_attr("input_std", input_std)
 
         study.set_user_attr("data_dir", dataset.data_dir)
-
 
     if train_dataset is not None:
         return data_init_transform, data_input_transform

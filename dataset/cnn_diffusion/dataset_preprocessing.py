@@ -4,7 +4,7 @@ import copy
 import torch
 import numpy as np
 import torchvision.transforms as transforms
-from datasets.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
+from dataset.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
 from models.auxiliary_functions import get_mean_std, log_data, exp_data, quantile_transform_fit, QuantileTRF, NormalizeData, log_all_data, init_norm, log10_data, log10_all_data, get_loss_fn
 #from torch_geometric.data import Data, DataLoader
 
@@ -221,6 +221,9 @@ def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=
         data_file_name = config["data_file_name"]
 
     dataset = BoneDatasetCT(data_dir=data_dir, data_file_name=data_file_name)
+
+    print("len dataset ", len(dataset))
+
 
     n_train_samples = None
     if "n_train_samples" in config and config["n_train_samples"] is not None:
