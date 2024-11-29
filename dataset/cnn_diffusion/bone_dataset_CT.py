@@ -16,7 +16,7 @@ class BoneDatasetCT(Dataset):
 
         self.data_dir = data_dir #
 
-        self.data_dir = "/mnt/database/BoneDat/derived/fields"
+        #self.data_dir = "/mnt/database/BoneDat/derived/fields"
 
         if not os.path.exists(self.data_dir):
             raise NotADirectoryError
@@ -25,7 +25,7 @@ class BoneDatasetCT(Dataset):
         #self._data_file_name = "lumbopelvic_masked_normed_resampled_32_32_32.npz"
         self._data_file_name = data_file_name #"lumbopelvic_masked_normed_local_resampled_32_32_32.npz"
 
-        self._data_file_name = "lumbopelvic_masked_normed_global_clip_resampled_32_32_32.npz"
+        #self._data_file_name = "lumbopelvic_masked_normed_global_clip_resampled_32_32_32.npz"
 
         # Values for postprocessing
         self._global_min_value = -1024.00
