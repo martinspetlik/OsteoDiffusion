@@ -17,7 +17,7 @@ from torch.optim import lr_scheduler
 # from datetime import datetime
 from models.auxiliary_functions import get_loss_fn
 # from metamodel.cnn.visualization.visualize_data import plot_samples, plot_dataset
-from datasets.cnn_diffusion.dataset_preprocessing import prepare_dataset
+from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
 from models.cnn_diffusion.diffusion_model import DiffusionModel
 from models.schedulers import NoiseScheduler
 from torch.utils.data import DataLoader

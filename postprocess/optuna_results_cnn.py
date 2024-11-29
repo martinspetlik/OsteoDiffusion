@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import torchvision.transforms as transforms
 #from datasets.bone_dataset import BoneDataset
-from datasets.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
+from dataset.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
 #from torch.utils.tensorboard import SummaryWriter
 from visualization.visualize_data import plot_train_valid_loss
 # from metamodel.cnn.models.auxiliary_functions import exp_data, get_eigendecomp, get_mse_nrmse_r2, get_mean_std, log_data, exp_data,\
