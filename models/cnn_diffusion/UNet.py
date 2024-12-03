@@ -340,8 +340,6 @@ class SimpleUNet(nn.Module):
                 ))
 
 
-
-
         # # self.encoder1 = nn.Conv3d(in_channels, 64, kernel_size=3, padding=1)
         # self.encoder1 = ConvNextBlock(
         #                     in_channels=init_conv_channels,

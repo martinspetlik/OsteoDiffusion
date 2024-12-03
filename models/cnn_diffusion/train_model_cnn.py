@@ -26,7 +26,8 @@ from models.cnn_diffusion.UNet import UNet, SimpleUNet, UNet3DWithTimestep, UNet
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
 
-def validate(model, validation_loader, loss_fn=nn.MSELoss(), acc_fn=nn.MSELoss(), use_cuda=False):
+
+def validate(model, validation_loader, config, loss_fn=nn.MSELoss(), acc_fn=nn.MSELoss(), use_cuda=False):
     """
     Validate model
     :param model:
@@ -47,9 +48,32 @@ def validate(model, validation_loader, loss_fn=nn.MSELoss(), acc_fn=nn.MSELoss()
             # vinputs = vinputs.float()
             # vtargets = vtargets.float()
 
+            if "mask_loss" in config and config["mask_loss"]:
+                mask = (samples != -1).float()
+            elif "weighted_mask_loss" in config and config["weighted_mask_loss"]:
+                mask = (samples != -1).float()
+                num_bone = mask.sum()
+                num_total = torch.numel(mask)
+                weight_background = num_bone / num_total
+                weight_bone = 1 - weight_background
+                weight_map = mask * weight_bone + (1 - mask) * weight_background
+
             noise, predicted_noise = model(samples)
 
-            vloss = loss_fn(noise, predicted_noise)
+            if "mask_loss" in config and config["mask_loss"]:
+                noise_masked = noise * mask
+                predicted_noise_masked = predicted_noise * mask
+
+                vloss = loss_fn(noise_masked, predicted_noise_masked)
+                #print("masked vloss ", vloss)
+            elif "weighted_mask_loss" in config and config["weighted_mask_loss"]:
+                weighted_noise = noise * weight_map
+                weighted_predicted_noise = predicted_noise * weight_map
+
+                vloss = loss_fn(weighted_noise, weighted_predicted_noise)
+                #print("weighted masked vloss ", vloss)
+            else:
+                vloss = loss_fn(noise, predicted_noise)
 
             # voutputs = torch.squeeze(model(vinputs))
             # #print("voutputs.shape ", voutputs.shape)
@@ -90,11 +114,47 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
         #
         # exit()
 
-        # mask = (samples != -1).float()
-        # num_bone = mask.sum()
-        # num_total = torch.numel(mask)
-        #weight_background = num_bone / num_total
-        #weight_bone = 1 - weight_background
+        if "mask_loss" in config and config["mask_loss"]:
+            mask = (samples != -1).float()
+            num_bone = mask.sum()
+            num_total = torch.numel(mask)
+            weight_background = num_bone / num_total
+            weight_bone = 1 - weight_background
+
+        elif "weighted_mask_loss" in config and config["weighted_mask_loss"]:
+            mask = (samples != -1).float()
+            #print("mask.shape ", mask.shape)
+
+            num_bone = mask.sum()
+            num_total = torch.numel(mask)
+            weight_background = num_bone / num_total
+            weight_bone = 1 - weight_background
+
+            weight_map = mask * weight_bone + (1 - mask) * weight_background
+
+            # import matplotlib.pyplot as plt
+            #
+            # plt.figure(figsize=(8, 6))
+            # plt.hist(samples[0].cpu().flatten(), bins=50, density=True, alpha=0.6, color='skyblue',
+            #          edgecolor='black',
+            #          label="image data np")
+            # plt.title("Sample")
+            # plt.xlabel("Value")
+            # plt.ylabel("Density")
+            # plt.show()
+            #
+            # weighted_samples = samples * weight_map
+            #
+            # plt.figure(figsize=(8, 6))
+            # plt.hist(weighted_samples[0].cpu().flatten(), bins=50, density=True, alpha=0.6, color='skyblue',
+            #          edgecolor='black',
+            #          label="image data np")
+            # plt.title("Wighted sample")
+            # plt.xlabel("Value")
+            # plt.ylabel("Density")
+            # plt.show()
+            #
+            # exit()
 
         #print("mask shape ", mask.shape)
 
@@ -126,21 +186,19 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
         noise, predicted_noise = model(samples)
 
-        # noise_masked = noise * mask
-        # predicted_noise_masked = predicted_noise * mask
+        if "mask_loss" in config and config["mask_loss"]:
+            noise_masked = noise * mask
+            predicted_noise_masked = predicted_noise * mask
+            loss = loss_fn(noise_masked, predicted_noise_masked)
+        elif "weighted_mask_loss" in config and config["weighted_mask_loss"]:
+            weighted_noise = noise * weight_map
+            weighted_predicted_noise = predicted_noise * weight_map
 
-        # print("noise ", noise[0][0][0][0][:10])
-        # print("predicted noise ", predicted_noise[0][0][0][0][:10])
+            loss = loss_fn(weighted_noise, weighted_predicted_noise)
+        else:
+            loss = loss_fn(noise, predicted_noise)
 
-        # print("noise shape", noise.shape)
-        # print("predicted noise shape", predicted_noise.shape)
-
-
-        #print("noise ", noise[0])
-        #print("predicted noise ", predicted_noise[0])
-
-        #loss = loss_fn(noise_masked, predicted_noise_masked)
-        loss = loss_fn(noise, predicted_noise)
+        #exit()
 
         #print("loss ", loss)
 
@@ -182,8 +240,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     loss_fn = get_loss_fn(loss_function)
 
-    print("loss fn ", loss_fn)
-
     if "n_train_samples" in trials_config and trials_config["n_train_samples"] is not None:
         n_train_samples = trial.suggest_categorical("n_train_samples", trials_config["n_train_samples"])
         config["n_train_samples"] = n_train_samples
@@ -207,6 +263,11 @@ def objective(trial, trials_config, train_loader, validation_loader):
     optimizer_name = "AdamW"
     if "optimizer_name" in trials_config:
         optimizer_name = trial.suggest_categorical("optimizer_name", trials_config["optimizer_name"])
+
+    if "mask_loss" in trials_config:
+        config["mask_loss"] = trials_config["mask_loss"]
+    if "weighted_mask_loss" in trials_config:
+        config["weighted_mask_loss"] = trials_config["weighted_mask_loss"]
 
     #####################
     #####################
@@ -332,11 +393,12 @@ def objective(trial, trials_config, train_loader, validation_loader):
             avg_vloss = avg_loss
             avg_vacc = 0
         else:
-            avg_vloss, avg_vacc = validate(diff_model, validation_loader, loss_fn=loss_fn,
+            avg_vloss, avg_vacc = validate(diff_model, validation_loader, config, loss_fn=loss_fn,
                                            use_cuda=use_cuda)  # Evaluate the model
 
         if scheduler is not None:
             scheduler.step(avg_loss)
+            scheduler_state_dict = scheduler.state_dict()
             print("scheduler lr: {}".format(scheduler._last_lr))
 
         avg_loss_list.append(avg_loss)
@@ -352,6 +414,20 @@ def objective(trial, trials_config, train_loader, validation_loader):
             model_state_dict = diff_model.state_dict()
             if train:
                 optimizer_state_dict = optimizer.state_dict()
+
+            model_path_epoch = os.path.join(output_dir, model_path + "_best_{}".format(epoch))
+
+            scheduler_state_dict = scheduler.state_dict()
+
+            torch.save({
+                'best_epoch': best_epoch,
+                'best_model_state_dict': model_state_dict,
+                'best_optimizer_state_dict': optimizer_state_dict,
+                'best_scheduler_state_dict': scheduler_state_dict,
+                'train_loss': avg_loss_list,
+                'valid_loss': avg_vloss_list,
+                'training_time': time.time() - start_time,
+            }, model_path_epoch)
 
         # For pruning (stops trial early if not promising)
         trial.report(avg_loss, epoch)
@@ -378,6 +454,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
         'best_epoch': best_epoch,
         'best_model_state_dict': model_state_dict,
         'best_optimizer_state_dict': optimizer_state_dict,
+        'best_scheduler_state_dict': scheduler_state_dict,
         'train_loss': avg_loss_list,
         'valid_loss': avg_vloss_list,
         'training_time': time.time() - start_time,
