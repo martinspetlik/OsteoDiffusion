@@ -393,14 +393,17 @@ class MedicalDiffusionUNet3D(nn.Module):
         init_kernel_size=7,
         use_sparse_linear_attn=True,
         block_type='resnet',
-        resnet_groups=8
+        resnet_groups=8,
+        use_rotary_emb=True
     ):
         super().__init__()
         self.channels = channels
-
         # temporal attention and its relative positional encoding
 
-        rotary_emb = None #RotaryEmbedding(min(32, attn_dim_head))
+        rotary_emb = None
+        if use_rotary_emb:
+            rotary_emb = RotaryEmbedding(min(32, attn_dim_head))
+
 
         def temporal_attn(dim): return EinopsToAndFrom('b c f h w', 'b (h w) f c', Attention(
             dim, heads=attn_heads, dim_head=attn_dim_head, rotary_emb=rotary_emb))
