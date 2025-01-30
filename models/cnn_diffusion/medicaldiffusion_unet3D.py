@@ -398,6 +398,7 @@ class MedicalDiffusionUNet3D(nn.Module):
     ):
         super().__init__()
         self.channels = channels
+        self.dim = dim
         # temporal attention and its relative positional encoding
 
         rotary_emb = None

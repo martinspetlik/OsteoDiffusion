@@ -218,7 +218,9 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
 
 def objective(trial, trials_config, train_loader, validation_loader):
-    best_loss = 1_000_000.
+    best_vloss = 1_000_000.
+    best_epoch = 0
+    save_model_best_epoch = 0
     lr = trial.suggest_categorical("lr", trials_config["lr"])
     batch_size_train = trial.suggest_categorical("batch_size_train", trials_config["batch_size_train"])
     batch_size_sample = trial.suggest_categorical("batch_size_sample", trials_config["batch_size_sample"])
@@ -360,7 +362,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
     start_time = time.time()
     avg_loss_list = []
     avg_vloss_list = []
-    avg_loss = best_loss
+    avg_vloss_list = []
+    avg_vloss, avg_loss = best_vloss, best_vloss
     best_epoch = 0
     model_state_dict = {}
     optimizer_state_dict = {}
@@ -411,8 +414,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
         print("epoch: {}, LOSS train: {}, val: {}, ACC val: {}".format(epoch, avg_loss, avg_vloss, avg_vacc))
 
-        if avg_loss < best_loss:
-            best_loss = avg_loss
+        if avg_vloss < best_vloss:
+            best_vloss = avg_vloss
             best_epoch = epoch
             print("best epoch ", best_epoch)
 
@@ -435,7 +438,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
             }, model_path_epoch)
 
         # For pruning (stops trial early if not promising)
-        trial.report(avg_loss, epoch)
+        trial.report(avg_vloss, epoch)
         # Handle pruning based on the intermediate value.
         # if trial.should_prune():
         #     raise optuna.exceptions.TrialPruned()
@@ -465,7 +468,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
         'training_time': time.time() - start_time,
     }, model_path)
 
-    return best_loss
+    return best_vloss
 
 
 def load_trials_config(path_to_config):

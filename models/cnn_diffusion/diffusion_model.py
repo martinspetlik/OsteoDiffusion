@@ -224,6 +224,7 @@ class DiffusionModel(nn.Module):
 
         print("graphs device ", samples.device)
         print("self.noise_scheduler.num_timesteps ", self.noise_scheduler.num_timesteps)
+        print("self.noise_scheduler.num_gen_timesteps ", self.noise_scheduler.num_gen_timesteps)
 
         #edge_indices = dataset.edge_indices if dataset is not None else None
 
@@ -231,7 +232,7 @@ class DiffusionModel(nn.Module):
 
         print("samples mean: {}, std: {}".format(torch.mean(samples.cpu().flatten()), torch.std(samples.cpu().flatten())))
 
-        for t in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), total=self.noise_scheduler.num_timesteps):
+        for t in tqdm(reversed(range(0, self.noise_scheduler.num_timesteps)), total=self.noise_scheduler.num_gen_timesteps):
             print("t ", t)
             samples = self.p_samples(samples, t)
 
