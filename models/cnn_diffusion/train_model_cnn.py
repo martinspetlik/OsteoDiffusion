@@ -23,6 +23,7 @@ from models.schedulers import NoiseScheduler
 from torch.utils.data import DataLoader
 from models.cnn_diffusion.UNet import UNet, SimpleUNet, UNet3DWithTimestep, UNet3DAmir
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
+from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
@@ -300,6 +301,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
         model_class = UNet
     elif model_class_name == "MedicalDiffusionUNet3D":
         model_class = MedicalDiffusionUNet3D
+    elif model_class_name == "MedicalDiffusionUNet3DOwn":
+        model_class = MedicalDiffusionUNet3DOwn
 
     #cnn_kwargs = {'dim': 32, 'channels': 1}
     #cnn_model = UNet(**cnn_kwargs)
