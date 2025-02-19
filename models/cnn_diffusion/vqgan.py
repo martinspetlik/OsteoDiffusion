@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
-from vqgan_utils import shift_dim, adopt_weight, LPIPS, Codebook
+from models.cnn_diffusion.vqgan_utils import shift_dim, adopt_weight, LPIPS, Codebook
 
 
 def silu(x):
