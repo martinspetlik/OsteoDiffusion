@@ -24,6 +24,8 @@ from torch.utils.data import DataLoader
 from models.cnn_diffusion.UNet import UNet, SimpleUNet, UNet3DWithTimestep, UNet3DAmir
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
 from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
+from models.cnn_diffusion.vqgan import VQGAN
+from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
@@ -303,13 +305,27 @@ def objective(trial, trials_config, train_loader, validation_loader):
         model_class = MedicalDiffusionUNet3D
     elif model_class_name == "MedicalDiffusionUNet3DOwn":
         model_class = MedicalDiffusionUNet3DOwn
+    elif model_class_name == "SyntheticCTUNet":
+        model_class = SyntheticCTUNet
+    elif model_class_name == "VQGAN":
+        model_class = VQGAN
 
     #cnn_kwargs = {'dim': 32, 'channels': 1}
     #cnn_model = UNet(**cnn_kwargs)
     #cnn_model = UNet3DMedicalDiffusion(**cnn_kwargs)
     print("cnn config ", cnn_config)
+
+
+
+
+
     print("model class", model_class)
-    cnn_model = model_class(**cnn_config)
+    if model_class_name == "VQGAN":
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(**{"model": SimpleNamespace(**cnn_config)})
+        cnn_model = model_class(cfg)
+    else:
+        cnn_model = model_class(**cnn_config)
 
     ####
     ## SimpleUNet
