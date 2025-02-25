@@ -25,7 +25,8 @@ from torch.utils.data import DataLoader
 from models.cnn_diffusion.UNet import UNet, SimpleUNet, UNet3DWithTimestep, UNet3DAmir
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
 from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
-from models.cnn_diffusion.vqgan import VQGAN
+from models.cnn_diffusion.medical_diffusion_vqgan import MedicalDiffusionVQGAN
+from models.cnn_diffusion.aldm_vqgan import ALDMVQGAN
 #from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
 import pytorch_lightning as pl
 
@@ -122,23 +123,28 @@ def objective(trial, trials_config, train_loader, validation_loader):
     # elif model_class_name == "SyntheticCTUNet":
     #     model_class = SyntheticCTUNet
     cnn_model_class = MedicalDiffusionUNet3D
-    if model_class_name == "VQGAN":
-        model_class = VQGAN
+    if model_class_name == "MedicalDiffusionVQGAN":
+        model_class = MedicalDiffusionVQGAN
+    if model_class_name == "ALDMVQGAN":
+        model_class = ALDMVQGAN
 
     #cnn_kwargs = {'dim': 32, 'channels': 1}
     #cnn_model = UNet(**cnn_kwargs)
     #cnn_model = UNet3DMedicalDiffusion(**cnn_kwargs)
     print("cnn config ", cnn_config)
 
-    cnn_config["default_root_dir"] = output_dir
-
+    default_root_dir = output_dir
 
     print("model class", model_class)
-    if model_class_name == "VQGAN":
+    if model_class_name == "MedicalDiffusionVQGAN":
         from types import SimpleNamespace
+        cnn_config["default_root_dir"] = default_root_dir
         cfg = SimpleNamespace(**{"model": SimpleNamespace(**cnn_config)})
         vqgan_model = model_class(cfg)
 
+    if model_class_name == "ALDMVQGAN":
+        vqgan_model = model_class(**cnn_config)
+        vqgan_model.learning_rate = trials_config["base_learning_rate"]
         #cnn_model = cnn_model_class(**cnn_config)
 
     ####
@@ -247,7 +253,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
 
     # load the most recent checkpoint file
-    base_dir = os.path.join(cfg.model.default_root_dir, 'lightning_logs')
+    base_dir = os.path.join(default_root_dir, 'lightning_logs')
     if os.path.exists(base_dir):
         log_folder = ckpt_file = ''
         version_id_used = step_used = 0
@@ -270,18 +276,18 @@ def objective(trial, trials_config, train_loader, validation_loader):
                       cfg.model.resume_from_checkpoint)
 
     accelerator = 'cpu'
-    if cfg.model.gpus > 0:
+    if torch.cuda.is_available():
         accelerator = 'cuda'
 
     trainer = pl.Trainer(
         #gpus=cfg.model.gpus,
-        accumulate_grad_batches=cfg.model.accumulate_grad_batches,
-        default_root_dir=cfg.model.default_root_dir,
+        accumulate_grad_batches=trials_config["accumulate_grad_batches"],
+        default_root_dir=default_root_dir,
         #resume_from_checkpoint=cfg.model.resume_from_checkpoint,
         callbacks=callbacks,
-        max_steps=cfg.model.max_steps,
-        max_epochs=cfg.model.max_epochs,
-        precision=cfg.model.precision,
+        max_steps=trials_config["max_steps"],
+        max_epochs=trials_config["max_epochs"],
+        precision=trials_config["precision"],
         #gradient_clip_val=cfg.model.gradient_clip_val,
         accelerator=accelerator,
     )

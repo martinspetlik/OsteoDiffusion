@@ -62,6 +62,8 @@ class VQGAN(pl.LightningModule):
         self.codebook = Codebook(cfg.model.n_codes, cfg.model.embedding_dim,
                                  no_random_restart=cfg.model.no_random_restart, restart_thres=cfg.model.restart_thres)
 
+        print("encoder ", self.encoder)
+
         self.pre_vq_conv = SamePadConv3d(
             self.encoder.out_channels, cfg.model.embedding_dim, 1, padding_type=cfg.model.padding_type)
         self.post_vq_conv = SamePadConv3d(
@@ -116,13 +118,11 @@ class VQGAN(pl.LightningModule):
 
         return x_recon, vq_output
 
-
     def training_step(self, batch, batch_idx):
         x = batch
         B, C, T, H, W = x.shape
         # Get optimizers
         optimizer_g, optimizer_d = self.optimizers()
-
 
         #######################
         ##  Train generator  ##
@@ -345,6 +345,8 @@ class Encoder(nn.Module):
 
         self.conv_first = SamePadConv3d(
             image_channel, n_hiddens, kernel_size=3, padding_type=padding_type)
+
+        print("max ds ", max_ds)
 
         for i in range(max_ds):
             block = nn.Module()
