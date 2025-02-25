@@ -41,7 +41,7 @@ def vanilla_d_loss(logits_real, logits_fake):
     return d_loss
 
 
-class VQGAN(pl.LightningModule):
+class MedicalDiffusionVQGAN(pl.LightningModule):
     def __init__(self, cfg):
         super().__init__()
         self._name = "VQGAN"
