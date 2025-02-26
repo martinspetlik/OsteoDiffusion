@@ -31,7 +31,7 @@ from models.cnn_diffusion.aldm_vqgan import ALDMVQGAN
 import pytorch_lightning as pl
 
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+#os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
 
 
