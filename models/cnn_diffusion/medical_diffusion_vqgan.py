@@ -62,8 +62,6 @@ class MedicalDiffusionVQGAN(pl.LightningModule):
         self.codebook = Codebook(cfg.model.n_codes, cfg.model.embedding_dim,
                                  no_random_restart=cfg.model.no_random_restart, restart_thres=cfg.model.restart_thres)
 
-        print("encoder ", self.encoder)
-
         self.pre_vq_conv = SamePadConv3d(
             self.encoder.out_channels, cfg.model.embedding_dim, 1, padding_type=cfg.model.padding_type)
         self.post_vq_conv = SamePadConv3d(
@@ -327,7 +325,7 @@ class MedicalDiffusionVQGAN(pl.LightningModule):
     #     return log
 
 
-def Normalize(in_channels, norm_type='group', num_groups=32):
+def Normalize(in_channels, norm_type='group', num_groups=8):
     assert norm_type in ['group', 'batch']
     if norm_type == 'group':
         # TODO Changed num_groups from 32 to 8
@@ -346,7 +344,6 @@ class Encoder(nn.Module):
         self.conv_first = SamePadConv3d(
             image_channel, n_hiddens, kernel_size=3, padding_type=padding_type)
 
-        print("max ds ", max_ds)
 
         for i in range(max_ds):
             block = nn.Module()
