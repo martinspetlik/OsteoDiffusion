@@ -3,7 +3,6 @@ import sys
 import argparse
 import joblib
 import torch
-import torch.nn as nn
 import optuna
 from optuna.trial import TrialState
 from optuna.samplers import TPESampler, BruteForceSampler
@@ -11,22 +10,18 @@ import time
 import yaml
 import shutil
 import numpy as np
-import torch.optim as optim
-from torch.optim import lr_scheduler
 # #from torch.utils.tensorboard import SummaryWriter
 # from datetime import datetime
-import torch.nn.functional as F
 from models.auxiliary_functions import get_loss_fn
 # from metamodel.cnn.visualization.visualize_data import plot_samples, plot_dataset
 from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
-from models.cnn_diffusion.diffusion_model import DiffusionModel
 from models.schedulers import NoiseScheduler
 from torch.utils.data import DataLoader
-from models.cnn_diffusion.UNet import UNet, SimpleUNet, UNet3DWithTimestep, UNet3DAmir
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
-from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
-from models.cnn_diffusion.medical_diffusion_vqgan import MedicalDiffusionVQGAN
-from models.cnn_diffusion.aldm_vqgan import ALDMVQGAN
+from models.vqgan.adopted_codes.medical_diffusion_vqgan import MedicalDiffusionVQGAN
+from models.vqgan.adopted_codes.aldm_vqgan import ALDMVQGAN
+from models.vqgan.vqgan import CustomVQGAN
+from models.vqgan.auxilliary_code import ImageLogger
 #from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
 import pytorch_lightning as pl
 
@@ -99,9 +94,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ##################################
     ### Graph neural network model ###
     ##################################
-    cnn_config = {}
-    if "cnn_config" in trials_config:
-        cnn_config = trial.suggest_categorical("cnn_config", trials_config["cnn_config"])
+    model_config = {}
+    if "model_config" in trials_config:
+        model_config = trial.suggest_categorical("model_config", trials_config["model_config"])
 
     num_node_attrs = trials_config["num_node_attrs"]
 
@@ -127,23 +122,29 @@ def objective(trial, trials_config, train_loader, validation_loader):
         model_class = MedicalDiffusionVQGAN
     if model_class_name == "ALDMVQGAN":
         model_class = ALDMVQGAN
+    if model_class_name == "CustomVQGAN":
+        model_class = CustomVQGAN
 
     #cnn_kwargs = {'dim': 32, 'channels': 1}
     #cnn_model = UNet(**cnn_kwargs)
     #cnn_model = UNet3DMedicalDiffusion(**cnn_kwargs)
-    print("cnn config ", cnn_config)
+    print("model_config ", model_config)
 
     default_root_dir = output_dir
 
     print("model class", model_class)
     if model_class_name == "MedicalDiffusionVQGAN":
         from types import SimpleNamespace
-        cnn_config["default_root_dir"] = default_root_dir
-        cfg = SimpleNamespace(**{"model": SimpleNamespace(**cnn_config)})
+        model_config["default_root_dir"] = default_root_dir
+        cfg = SimpleNamespace(**{"model": SimpleNamespace(**model_config)})
         vqgan_model = model_class(cfg)
 
     if model_class_name == "ALDMVQGAN":
-        vqgan_model = model_class(**cnn_config)
+        vqgan_model = model_class(**model_config)
+        vqgan_model.learning_rate = trials_config["base_learning_rate"]
+        #cnn_model = cnn_model_class(**cnn_config)
+    if model_class_name == "CustomVQGAN":
+        vqgan_model = model_class(**model_config)
         vqgan_model.learning_rate = trials_config["base_learning_rate"]
         #cnn_model = cnn_model_class(**cnn_config)
 
@@ -188,7 +189,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     # trial.set_user_attr("diff_model_name", diff_model._name)
     # trial.set_user_attr("cnn_model_class", cnn_model.__class__)
     #trial.set_user_attr("cnn_model_name", cnn_model._name)
-    trial.set_user_attr("cnn_config", cnn_config)
+    trial.set_user_attr("model_config", model_config)
     trial.set_user_attr("num_node_attrs", num_node_attrs)
     #trial.set_user_attr("gnn_model_kwargs", gnn_kwargs)
     trial.set_user_attr("noise_scheduler_kwargs", noise_scheduler_kwargs)
@@ -246,8 +247,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
                                      save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
     callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
                                      filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
-    # callbacks.append(ImageLogger(
-    #     batch_frequency=750, max_images=4, clamp=True))
+    callbacks.append(ImageLogger(
+         batch_frequency=750, max_images=4, clamp=True))
     # callbacks.append(VideoLogger(
     #     batch_frequency=1500, max_videos=4, clamp=True))
 

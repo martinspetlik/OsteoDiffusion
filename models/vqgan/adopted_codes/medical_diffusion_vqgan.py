@@ -344,10 +344,10 @@ class Encoder(nn.Module):
         self.conv_first = SamePadConv3d(
             image_channel, n_hiddens, kernel_size=3, padding_type=padding_type)
 
-
         for i in range(max_ds):
             block = nn.Module()
             in_channels = n_hiddens * 2**i
+            print("in channels ", in_channels)
             out_channels = n_hiddens * 2**(i+1)
             stride = tuple([2 if d > 0 else 1 for d in n_times_downsample])
             block.down = SamePadConv3d(
