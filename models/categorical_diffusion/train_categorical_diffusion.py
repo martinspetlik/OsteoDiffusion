@@ -19,17 +19,18 @@ from models.categorical_diffusion.diffusion_model import CategoricalDiffusionMod
 from models.schedulers import CategoricalNoiseScheduler
 from torch.utils.data import DataLoader
 from models.vqgan.vqgan_model import VQGAN
+from models.categorical_diffusion.categorical_UNet3D import CategoricalDiffusionUNet3D
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
-
 
 
 def get_used_codebook_indices(dataloader, vqgan):
     # Get only used codebook indices
     used_indices = set()
     for batch in dataloader:
-        input = batch.to(device)
+        volumes, cond = batch
+        input = volumes.to(device)
         h = vqgan.encoder(input)
         h = vqgan.quant_conv(h)
         print("latent space shape ", h.shape)
@@ -40,7 +41,7 @@ def get_used_codebook_indices(dataloader, vqgan):
     used_codebook_indices_file_path = os.path.join("used_indices.npy")
     np.save(used_codebook_indices_file_path, np.array(sorted(used_indices)))
     vqgan.quantize.set_used_indices(used_codebook_indices_file_path)
-    return vqgan
+    return vqgan, used_indices
 
 
 def validate(model, vqgan, validation_loader, config, loss_fn=nn.CrossEntropyLoss(), acc_fn=nn.CrossEntropyLoss(), use_cuda=False):
@@ -56,7 +57,8 @@ def validate(model, vqgan, validation_loader, config, loss_fn=nn.CrossEntropyLos
         for i, samples in enumerate(validation_loader):
             # if torch.cuda.is_available() and use_cuda:
             #     samples = samples.cuda()
-            input = samples.to(device)
+            volumes, cond = samples
+            input = volumes.to(device)
             h = vqgan.encoder(input)
             h = vqgan.quant_conv(h)
             vqgan.quantize.sane_index_shape = True  # get in spatial format
@@ -85,11 +87,11 @@ def train_one_epoch(model, vqgan, optimizer, train_loader, config, loss_fn=nn.Cr
     :return:
     """
     # Get only used codebook indices
-
-
     running_loss = 0.
     for i, samples in enumerate(train_loader):
-        input = samples.to(device)
+        volumes, conds = samples
+        input = volumes.to(device)
+        print("input shape ", input.shape)
         h = vqgan.encoder(input)
         h = vqgan.quant_conv(h)
         vqgan.quantize.sane_index_shape = True  # get in spatial format
@@ -145,11 +147,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
         if "n_test_samples" in trials_config and trials_config["n_test_samples"] is not None:
             config["n_test_samples"] = trials_config["n_test_samples"]
 
-        # if "sub_datasets" in config and len(config["sub_datasets"]) > 0:
-        #     train_set, validation_set, test_set = prepare_sub_datasets(study, config, data_dir=data_dir,
-        #                                                                serialize_path=output_dir)
-        # else:
-
         train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
 
         print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set), len(test_set)))
@@ -173,41 +170,58 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ####################
     ####################
 
-    ##################################
-    ### Graph neural network model ###
-    ##################################
     cnn_config = {}
     if "cnn_config" in trials_config:
         cnn_config = trial.suggest_categorical("cnn_config", trials_config["cnn_config"])
 
+    ################
+    ## Load VQGAN ##
+    ################
+
+    vqgan_study = joblib.load(os.path.join(trials_config["vqgan_results_dir"], "study.pkl"))
+    vqgan_model_path = os.path.join(trials_config["vqgan_results_dir"], "lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt")
+
+    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path,
+                                                        **vqgan_study.best_trial.params["model_config"])
+
+    vqgan_model_checkpoint.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    vqgan_model_checkpoint.to(device)
+    vqgan_model_checkpoint, used_codebook_indices = get_used_codebook_indices(train_loader, vqgan_model_checkpoint)
+
+    num_classes = len(used_codebook_indices)
+
+    cnn_config["num_classes"] = num_classes
+
+    print("cnn num classes ", cnn_config["num_classes"])
+
     num_node_attrs = trials_config["num_node_attrs"]
 
-    ####
-    ## SimpleUNet
-    ####
-    model_class_name = "SimpleUNet"
-    if "model_class_name" in trials_config:
-        model_class_name = trials_config["model_class_name"]
+    model_class_name = trials_config["model_class_name"]
+    if model_class_name == "CategoricalDiffusionUNet3D":
+        model_class = CategoricalDiffusionUNet3D
 
-    if model_class_name == "CategoricalDiffusion":
-        model_class = CategoricalDiffusionModel
-
-
-
-    diffusion_model = model_class(**cnn_config)
+    unet_diffusion_model = model_class(**cnn_config)
 
     #######################
     ### Noise scheduler ###
     #######################
-    noise_scheduler_kwargs = {'beta_scheduler_type':beta_scheduler_type,
-                              'num_timesteps':trials_config["num_timesteps"],
-                              'scheduler_kwargs': scheduler_kwargs}
+    noise_scheduler_kwargs = {}
+    if "noise_scheduler_config" in trials_config:
+        noise_scheduler_kwargs = trials_config["noise_scheduler_config"]
+
+
+    noise_scheduler_kwargs['num_classes'] = num_classes
+    noise_scheduler_kwargs['num_timesteps'] = trials_config["num_timesteps"]
+
+    print("noise scheduler kwags ", noise_scheduler_kwargs)
+
     noise_scheduler = CategoricalNoiseScheduler(**noise_scheduler_kwargs)
 
     #######################
     ### Diffusion model ###
     #######################
-    diff_model = CategoricalDiffusionModel(diffusion_model, noise_scheduler).to(device)
+    diff_model = CategoricalDiffusionModel(unet_diffusion_model, noise_scheduler).to(device)
 
     #########################
     #########################
@@ -269,17 +283,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
                                             gamma=trial_scheduler["gamma"])
 
 
-    ################
-    ## Load VQGAN ##
-    ################
-    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(trials_config["vqgan_model_path"],
-                                                        **study.best_trial.params["model_config"])
 
-    vqgan_model_checkpoint.eval()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vqgan_model_checkpoint.to(device)
-
-    vqgan_model_checkpoint = get_used_codebook_indices(train_loader, vqgan_model_checkpoint)
 
 
     for epoch in range(config["num_epochs"]):
@@ -392,36 +396,36 @@ if __name__ == '__main__':
               "n_test_samples": trials_config["n_test_samples"] if "n_test_samples" in trials_config else None,
               "train_samples_ratio": trials_config["train_samples_ratio"] if "train_samples_ratio" in trials_config else 0.9,
               "val_samples_ratio": trials_config["val_samples_ratio"] if "val_samples_ratio" in trials_config else 0.2,
-              "print_batches": 10,
-              "init_norm": trials_config["init_norm"] if "init_norm" in trials_config else False,
-              "init_norm_use_all_features": trials_config["init_norm_use_all_features"] if "init_norm_use_all_features" in trials_config else False,
-              "log_all_input_channels": trials_config["log_all_input_channels"] if "log_all_input_channels" in trials_config else False,
-              "log_input": trials_config["log_input"] if "log_input" in trials_config else True,
-              "normalize_input": trials_config["normalize_input"] if "normalize_input" in trials_config else True,
-              "log_output": trials_config["log_output"] if "log_output" in trials_config else False,
-              "log10_output": trials_config["log10_output"] if "log10_output" in trials_config else False,
-              "log_all_output": trials_config["log_all_output"] if "log_all_output" in trials_config else False,
-              "log10_all_output": trials_config["log10_all_output"] if "log10_all_output" in trials_config else False,
-              "normalize_output": trials_config["normalize_output"] if "normalize_output" in trials_config else True,
-              "input_channels": trials_config["input_channels"] if "input_channels" in trials_config else None,
-              "output_channels": trials_config["output_channels"] if "output_channels" in trials_config else None,
-              "fractures_sep": trials_config["fractures_sep"] if "fractures_sep" in trials_config else False,
-              "cross_section": trials_config["cross_section"] if "cross_section" in trials_config else False,
+              #"print_batches": 10,
+              #"init_norm": trials_config["init_norm"] if "init_norm" in trials_config else False,
+              #"init_norm_use_all_features": trials_config["init_norm_use_all_features"] if "init_norm_use_all_features" in trials_config else False,
+              #"log_all_input_channels": trials_config["log_all_input_channels"] if "log_all_input_channels" in trials_config else False,
+              #"log_input": trials_config["log_input"] if "log_input" in trials_config else True,
+              #"normalize_input": trials_config["normalize_input"] if "normalize_input" in trials_config else True,
+              #"log_output": trials_config["log_output"] if "log_output" in trials_config else False,
+              #"log10_output": trials_config["log10_output"] if "log10_output" in trials_config else False,
+              #"log_all_output": trials_config["log_all_output"] if "log_all_output" in trials_config else False,
+              #"log10_all_output": trials_config["log10_all_output"] if "log10_all_output" in trials_config else False,
+              #"normalize_output": trials_config["normalize_output"] if "normalize_output" in trials_config else True,
+              #"input_channels": trials_config["input_channels"] if "input_channels" in trials_config else None,
+              #"output_channels": trials_config["output_channels"] if "output_channels" in trials_config else None,
+              #"fractures_sep": trials_config["fractures_sep"] if "fractures_sep" in trials_config else False,
+              #"cross_section": trials_config["cross_section"] if "cross_section" in trials_config else False,
               "seed": trials_config["random_seed"] if "random_seed" in trials_config else 12345,
               "output_dir": output_dir,
-              "sub_datasets": trials_config["sub_datasets"] if "sub_datasets" in trials_config else {}
+              #"sub_datasets": trials_config["sub_datasets"] if "sub_datasets" in trials_config else {}
               }
 
     if "input_transform" in trials_config:
         config["input_transform"] = trials_config["input_transform"]
     if "output_transform" in trials_config:
         config["output_transform"] = trials_config["output_transform"]
-    if "output_iqr_scale" in trials_config:
-        config["output_iqr_scale"] = trials_config["output_iqr_scale"]
-    if "normalize_input_indices" in trials_config:
-        config["normalize_input_indices"] = trials_config["normalize_input_indices"]
-    if "normalize_output_indices" in trials_config:
-        config["normalize_output_indices"] = trials_config["normalize_output_indices"]
+    # if "output_iqr_scale" in trials_config:
+    #     config["output_iqr_scale"] = trials_config["output_iqr_scale"]
+    # if "normalize_input_indices" in trials_config:
+    #     config["normalize_input_indices"] = trials_config["normalize_input_indices"]
+    # if "normalize_output_indices" in trials_config:
+    #     config["normalize_output_indices"] = trials_config["normalize_output_indices"]
 
     if "data_file_name" in trials_config:
         config["data_file_name"] = trials_config["data_file_name"]

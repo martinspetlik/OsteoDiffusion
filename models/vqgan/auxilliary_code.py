@@ -58,9 +58,10 @@ class ImageLogger(Callback):
             if was_training:
                 pl_module.eval()
 
+            x, cond = batch
+
             with torch.no_grad():
-                print("batch.shape ", batch.shape)
-                images = pl_module.log_images(batch, split=split, pl_module=pl_module)
+                images = pl_module.log_images(x, split=split, pl_module=pl_module)
 
             for k in images:
                 N = min(images[k].shape[0], self.max_images)

@@ -1,47 +1,35 @@
 import os
 import copy
-#os.environ["DGLBACKEND"] = "pytorch"
-#import dgl
 import glob
 import torch
-#from torch_geometric.data import Data
 from torch.utils.data import Dataset
 import numpy as np
-#import pyvista as pv
-#from torch_geometric.utils import to_scipy_sparse_matrix, to_torch_sparse_tensor
+import pandas as pd
 
 
 class BoneDatasetCT(Dataset):
-    def __init__(self, data_dir, data_file_name=None, input_transform=None, input_channels=None):
+    def __init__(self, data_dir, data_file_name=None, input_transform=None, metadata_file_name="metadata.xlsx"):
 
         self.data_dir = data_dir #
 
-        #self.data_dir = "/mnt/database/BoneDat/derived/fields"
+        self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
+        self.metadata_dir = "/mnt/database/BoneDat/raw"
 
         if not os.path.exists(self.data_dir):
             raise NotADirectoryError
 
-        #self._data_file_name = "lumbopelvic_masked_normed_resampled_100_100_100.npz"
-        #self._data_file_name = "lumbopelvic_masked_normed_resampled_32_32_32.npz"
         self._data_file_name = data_file_name #"lumbopelvic_masked_normed_local_resampled_32_32_32.npz"
+        self._metadata_file_name = metadata_file_name
 
         #self._data_file_name = "lumbopelvic_masked_normed_global_clip_resampled_32_32_32.npz"
 
         # Values for postprocessing
         self._global_min_value = -1024.00
-        self._global_max_value = 2000
-
-        # split_data_dir = data_dir.split("/")
-        # self.data_dir = os.path.join(local_data_path, split_data_dir[-1])
+        self._global_max_value = 1650
 
         self.input_transform = input_transform
-
         self._image_file_paths = []
-        #self.input_channels = input_channels
-        #self._graphs_features = []
-        #self.num_nodes = 0
-        #self._adj_matrix = None
-        #self.process_data()
+        self._metadata_file_paths = []
 
         self._set_paths_to_samples()
 
@@ -50,6 +38,7 @@ class BoneDatasetCT(Dataset):
             np.random.seed(seed)
         perm = np.random.permutation(len(self._image_file_paths))
         self._image_file_paths = list(np.array(self._image_file_paths)[perm])
+        self._metadata_file_paths = list(np.array(self._metadata_file_paths)[perm])
 
     def _set_paths_to_samples(self):
         if self.data_dir is None:
@@ -60,21 +49,36 @@ class BoneDatasetCT(Dataset):
             if os.path.exists(image_file):
                 self._image_file_paths.append(image_file)
 
+            dir_name = os.path.basename(data_dir)
+            metadata_file = os.path.join(self.metadata_dir, os.path.join(dir_name, self._metadata_file_name))
+            if not os.path.exists(metadata_file):
+                raise FileNotFoundError("Metadata file {} not exists".format(metadata_file))
+            self._metadata_file_paths.append(metadata_file)
+
+    def load_metadata(self, metadata_file):
+        metadata_dict = pd.read_excel(metadata_file, engine="openpyxl").iloc[0].to_dict()
+        return {"sex": metadata_dict["sex"], "age": metadata_dict['CT date'] - metadata_dict['born']}
+
     def __getitem__(self, idx):
         #print("idx ", idx)
         image_path = self._image_file_paths[idx]
+        metadata_path = self._metadata_file_paths[idx]
         #print("image path ", image_path)
         if isinstance(image_path, (list, np.ndarray)):
             new_dataset = copy.deepcopy(self)
             new_dataset._image_file_paths = image_path
+            new_dataset._metadata_file_paths = metadata_path
             return new_dataset
 
         image_data = np.load(image_path)["data"]
+        metadata = self.load_metadata(metadata_path)
+        sex = 1.0 if metadata["sex"] == "F" else 0.0
+        age_norm = metadata["age"] / 100.0
 
         if self.input_transform is not None:
             image_data = self.input_transform(image_data)
 
-        return image_data.reshape(1, *image_data.shape)
+        return image_data.reshape(1, *image_data.shape), (sex, age_norm)
 
     def __len__(self):
         return len(self._image_file_paths)

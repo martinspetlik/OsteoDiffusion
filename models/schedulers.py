@@ -156,6 +156,8 @@ class CategoricalNoiseScheduler(nn.Module):
         """
         T, C, _ = self.q_t_given_tmin1.shape
         q_t_given_0 = torch.zeros((T, C, C))
+        if torch.cuda.is_available() and self.use_cuda:
+            q_t_given_0 = q_t_given_0.cuda()
         q_t_given_0[0] = self.q_t_given_tmin1[0]
 
         for t in range(1, T):

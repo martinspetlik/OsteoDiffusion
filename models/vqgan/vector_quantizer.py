@@ -48,7 +48,6 @@ class VectorQuantizer(nn.Module):
         print(f"Remapping {self.num_embed} indices to {self.re_embed} indices. "
               f"Using {self.unknown_index} for unknown indices.")
 
-
     def remap_to_used(self, inds):
         # Map raw indices to a known subset of indices (used embeddings)
         ishape = inds.shape
@@ -122,7 +121,7 @@ class VectorQuantizer(nn.Module):
 
         if self.sane_index_shape:
             min_encoding_indices = min_encoding_indices.reshape(
-                z_q.shape[-3], z_q.shape[-2], z_q.shape[-1])
+                z_q.shape[0], z_q.shape[-3], z_q.shape[-2], z_q.shape[-1])
 
         return z_q, loss, (perplexity, min_encodings, min_encoding_indices)
 

@@ -15,17 +15,14 @@ from PIL import Image
 from tqdm import tqdm
 from einops import rearrange
 from einops_exts import check_shape, rearrange_many
-
 from rotary_embedding_torch import RotaryEmbedding
 
-from transformers import BertModel,
 from torch.utils.data import Dataset, DataLoader
 #from vq_gan_3d.model.vqgan import VQGAN
 
 import matplotlib.pyplot as plt
 
 # helpers functions
-
 
 def exists(x):
     return x is not None

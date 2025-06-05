@@ -1,15 +1,10 @@
-import os
-import numpy as np
-import random
 import torch
 import pytorch_lightning as pl
 import importlib
-import torchvision.utils as vutils
 
 from models.vqgan.encoder_decoder import Encoder, Decoder
 from models.vqgan.vector_quantizer import VectorQuantizer
-# from models.cnn_diffusion.aldm.quantize import GumbelQuantize
-# from models.cnn_diffusion.aldm.quantize import EMAVectorQuantizer
+
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
@@ -95,8 +90,7 @@ class VQGAN(pl.LightningModule):
         return batch[k].float()
 
     def training_step(self, batch, batch_idx):
-        x = batch
-        B, C, T, H, W = x.shape
+        x, cond = batch
         skip_pass = 1
 
         xrec, qloss = self(x)
@@ -134,7 +128,7 @@ class VQGAN(pl.LightningModule):
         return {"gen_loss": aeloss, "d_loss": discloss}
 
     def validation_step(self, batch, batch_idx):
-        x = batch
+        x, cond = batch
         xrec, qloss = self(x)
 
         aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
