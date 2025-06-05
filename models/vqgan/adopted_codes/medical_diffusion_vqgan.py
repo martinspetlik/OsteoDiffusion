@@ -2,17 +2,14 @@
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved
 
 import math
-import argparse
 import numpy as np
-import pickle as pkl
 
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 
-from models.cnn_diffusion.vqgan_utils import shift_dim, adopt_weight, LPIPS, Codebook
+from models.vqgan.adopted_codes.vqgan_utils import shift_dim, adopt_weight, LPIPS, Codebook
 
 
 def silu(x):

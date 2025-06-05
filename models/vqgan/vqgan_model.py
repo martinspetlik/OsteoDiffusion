@@ -26,7 +26,7 @@ def instantiate_from_config(config):
     return get_obj_from_str(config["target"])(**config.get("params", dict()))
 
 
-class CustomVQGAN(pl.LightningModule):
+class VQGAN(pl.LightningModule):
     def __init__(self,
                  ed_config,
                  loss_config,
@@ -41,7 +41,7 @@ class CustomVQGAN(pl.LightningModule):
                  stage=1,
                  ):
         super().__init__()
-        self._name = "CustomVQGAN"
+        self._name = "VQGAN"
         #self.image_key = image_key
         self.automatic_optimization = False
 
@@ -110,6 +110,7 @@ class CustomVQGAN(pl.LightningModule):
                                         last_layer=self.get_last_layer(),
                                         skip_pass=skip_pass, split="train")
         self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log("train/recon_loss", log_dict_ae["train/rec_loss"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_ae)
         self.manual_backward(aeloss)
         optimizer_g.step()
@@ -122,6 +123,7 @@ class CustomVQGAN(pl.LightningModule):
                                             global_step=self.global_step,
                                             last_layer=self.get_last_layer(),
                                             skip_pass=skip_pass, split="train")
+
         self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_disc)
         self.manual_backward(discloss)
@@ -143,6 +145,7 @@ class CustomVQGAN(pl.LightningModule):
 
         self.log("val/recon_loss", rec_loss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log("val/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("val/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log_dict(log_dict_ae)
         self.log_dict(log_dict_disc)
         return self.log_dict
@@ -170,16 +173,16 @@ class CustomVQGAN(pl.LightningModule):
         #source = random.choice(self.modalities)
         #target = random.choice(self.modalities)
         x_src = batch[:1].float().to(self.device)
-        x_tar = batch[:1].float().to(self.device)
+        #x_tar = batch[:1].float().to(self.device)
         print("x_src.shape ", x_src.shape)
         xrec, _ = self(x_src)
 
-        print("x_tar.shape ", x_tar.shape)
+        #print("x_tar.shape ", x_tar.shape)
         # if x_src.shape[1] > 3:
         #     x_src = self.to_rgb(x_src)
         #     xrec = self.to_rgb(xrec)
         log["source"] = x_src
-        log["target"] = x_tar
+        #log["target"] = x_tar
         log["recon"] = xrec
         return log
 

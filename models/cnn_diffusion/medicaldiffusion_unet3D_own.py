@@ -432,7 +432,6 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
             PreNorm(init_dim, temporal_attn(init_dim)))
 
         # dimensions
-
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
@@ -455,7 +454,6 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
         num_resolutions = len(in_out)
 
         # block type
-
         block_klass = partial(ResnetBlock, groups=resnet_groups)
         block_klass_cond = partial(block_klass, time_emb_dim=cond_dim)
 
@@ -507,8 +505,7 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
         self,
         *args,
         cond_scale=2.,
-        **kwargs
-    ):
+        **kwargs):
         logits = self.forward(*args, null_cond_prob=0., **kwargs)
         if cond_scale == 1 or not self.has_cond:
             return logits
@@ -522,8 +519,7 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
         time,
         focus_present_mask=None,
         # probability at which a given batch sample will focus on the present (0. is all off, 1. is completely arrested attention across time)
-        prob_focus_present=0.
-    ):
+        prob_focus_present=0.):
 
         x = x.float()
 

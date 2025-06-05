@@ -1,11 +1,9 @@
 import random
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import pytorch_lightning as pl
 import importlib
 
-from models.cnn_diffusion.VQGAN_components import Encoder, Decoder
+from models.vqgan.adopted_codes.VQGAN_components import Encoder, Decoder
 from models.cnn_diffusion.aldm.quantize import VectorQuantizer2 as VectorQuantizer
 # from models.cnn_diffusion.aldm.quantize import GumbelQuantize
 # from models.cnn_diffusion.aldm.quantize import EMAVectorQuantizer

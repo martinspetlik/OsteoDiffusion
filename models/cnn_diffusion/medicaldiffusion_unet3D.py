@@ -265,6 +265,9 @@ class SpatialLinearAttention(nn.Module):
         q = q.softmax(dim=-2)
         k = k.softmax(dim=-1)
 
+        print("k.shape ", k.shape)
+        print("v.shape ", v.shape)
+
         q = q * self.scale
         context = torch.einsum('b h d n, b h e n -> b h d e', k, v)
 
@@ -405,7 +408,6 @@ class MedicalDiffusionUNet3D(nn.Module):
         if use_rotary_emb:
             rotary_emb = RotaryEmbedding(min(32, attn_dim_head))
 
-
         def temporal_attn(dim): return EinopsToAndFrom('b c f h w', 'b (h w) f c', Attention(
             dim, heads=attn_heads, dim_head=attn_dim_head, rotary_emb=rotary_emb))
 
@@ -441,7 +443,6 @@ class MedicalDiffusionUNet3D(nn.Module):
         )
 
         # text conditioning
-
         self.has_cond = exists(cond_dim) or use_bert_text_cond
         cond_dim = BERT_MODEL_DIM if use_bert_text_cond else cond_dim
 

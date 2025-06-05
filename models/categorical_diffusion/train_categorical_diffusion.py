@@ -3,7 +3,7 @@ import sys
 import argparse
 import joblib
 import torch
-import pytorch_lightning as pl
+import torch.nn as nn
 import optuna
 from optuna.trial import TrialState
 from optuna.samplers import TPESampler, BruteForceSampler
@@ -11,23 +11,106 @@ import time
 import yaml
 import shutil
 import numpy as np
-# #from torch.utils.tensorboard import SummaryWriter
-# from datetime import datetime
+import torch.optim as optim
+from torch.optim import lr_scheduler
 from models.auxiliary_functions import get_loss_fn
-# from metamodel.cnn.visualization.visualize_data import plot_samples, plot_dataset
 from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
-from models.schedulers import NoiseScheduler
+from models.categorical_diffusion.diffusion_model import CategoricalDiffusionModel
+from models.schedulers import CategoricalNoiseScheduler
 from torch.utils.data import DataLoader
-from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
-from models.vqgan.adopted_codes.medical_diffusion_vqgan import MedicalDiffusionVQGAN
-from models.vqgan.adopted_codes.aldm_vqgan import ALDMVQGAN
 from models.vqgan.vqgan_model import VQGAN
-from models.vqgan.auxilliary_code import ImageLogger
-from pytorch_lightning.callbacks import Timer
-#from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
 
-#os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
+
+
+
+def get_used_codebook_indices(dataloader, vqgan):
+    # Get only used codebook indices
+    used_indices = set()
+    for batch in dataloader:
+        input = batch.to(device)
+        h = vqgan.encoder(input)
+        h = vqgan.quant_conv(h)
+        print("latent space shape ", h.shape)
+        # vqgan.quantize.sane_index_shape = True  # get in spatial format
+        z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
+        used_indices.update(codebook_indices.cpu().numpy().flatten())
+
+    used_codebook_indices_file_path = os.path.join("used_indices.npy")
+    np.save(used_codebook_indices_file_path, np.array(sorted(used_indices)))
+    vqgan.quantize.set_used_indices(used_codebook_indices_file_path)
+    return vqgan
+
+
+def validate(model, vqgan, validation_loader, config, loss_fn=nn.CrossEntropyLoss(), acc_fn=nn.CrossEntropyLoss(), use_cuda=False):
+    """
+    Validate model
+    :param model:
+    :param loss_fn:
+    :return:
+    """
+    running_vloss = 0.0
+    running_vacc = 0
+    with torch.no_grad():
+        for i, samples in enumerate(validation_loader):
+            # if torch.cuda.is_available() and use_cuda:
+            #     samples = samples.cuda()
+            input = samples.to(device)
+            h = vqgan.encoder(input)
+            h = vqgan.quant_conv(h)
+            vqgan.quantize.sane_index_shape = True  # get in spatial format
+            z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
+
+            noise, predicted_noise = model(codebook_indices)
+            vloss = loss_fn(noise, predicted_noise)
+
+            running_vloss += vloss.item()
+
+            vacc = acc_fn(noise, predicted_noise)
+            running_vacc += vacc.item()
+
+        avg_vloss = running_vloss / (i + 1)
+        avg_vacc = running_vacc / (i + 1)
+
+    return avg_vloss, avg_vacc
+
+
+def train_one_epoch(model, vqgan, optimizer, train_loader, config, loss_fn=nn.CrossEntropyLoss(), use_cuda=True):
+    """
+    Train NN
+    :param model:
+    :param optimizer:
+    :param loss_fn:
+    :return:
+    """
+    # Get only used codebook indices
+
+
+    running_loss = 0.
+    for i, samples in enumerate(train_loader):
+        input = samples.to(device)
+        h = vqgan.encoder(input)
+        h = vqgan.quant_conv(h)
+        vqgan.quantize.sane_index_shape = True  # get in spatial format
+        z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
+
+        # if torch.cuda.is_available() and use_cuda:
+        #     samples = samples.cuda()
+        optimizer.zero_grad()
+
+        logits = model(codebook_indices)
+        loss = loss_fn(codebook_indices, logits)
+
+        loss.backward()
+        optimizer.step()
+
+        # Gather data and report
+        running_loss += loss.item()
+
+    train_loss = running_loss / (i + 1)
+    return train_loss
+
 
 def objective(trial, trials_config, train_loader, validation_loader):
     best_vloss = 1_000_000.
@@ -93,11 +176,11 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ##################################
     ### Graph neural network model ###
     ##################################
-    model_config = {}
-    if "model_config" in trials_config:
-        model_config = trial.suggest_categorical("model_config", trials_config["model_config"])
+    cnn_config = {}
+    if "cnn_config" in trials_config:
+        cnn_config = trial.suggest_categorical("cnn_config", trials_config["cnn_config"])
 
-    #num_node_attrs = trials_config["num_node_attrs"]
+    num_node_attrs = trials_config["num_node_attrs"]
 
     ####
     ## SimpleUNet
@@ -106,67 +189,25 @@ def objective(trial, trials_config, train_loader, validation_loader):
     if "model_class_name" in trials_config:
         model_class_name = trials_config["model_class_name"]
 
-    # if model_class_name == "SimpleUNet":
-    #      model_class = SimpleUNet
-    # elif model_class_name == "UNet":
-    #     model_class = UNet
-    # elif model_class_name == "MedicalDiffusionUNet3D":
-    #     model_class = MedicalDiffusionUNet3D
-    # elif model_class_name == "MedicalDiffusionUNet3DOwn":
-    #     model_class = MedicalDiffusionUNet3DOwn
-    # elif model_class_name == "SyntheticCTUNet":
-    #     model_class = SyntheticCTUNet
-    cnn_model_class = MedicalDiffusionUNet3D
-    if model_class_name == "MedicalDiffusionVQGAN":
-        model_class = MedicalDiffusionVQGAN
-    if model_class_name == "ALDMVQGAN":
-        model_class = ALDMVQGAN
-    if model_class_name == "VQGAN":
-        model_class = VQGAN
+    if model_class_name == "CategoricalDiffusion":
+        model_class = CategoricalDiffusionModel
 
-    #cnn_kwargs = {'dim': 32, 'channels': 1}
-    #cnn_model = UNet(**cnn_kwargs)
-    #cnn_model = UNet3DMedicalDiffusion(**cnn_kwargs)
-    print("model_config ", model_config)
 
-    default_root_dir = output_dir
 
-    print("model class", model_class)
-    if model_class_name == "MedicalDiffusionVQGAN":
-        from types import SimpleNamespace
-        model_config["default_root_dir"] = default_root_dir
-        cfg = SimpleNamespace(**{"model": SimpleNamespace(**model_config)})
-        vqgan_model = model_class(cfg)
+    diffusion_model = model_class(**cnn_config)
 
-    if model_class_name == "ALDMVQGAN":
-        vqgan_model = model_class(**model_config)
-        vqgan_model.learning_rate = lr
-        #cnn_model = cnn_model_class(**cnn_config)
-    if model_class_name == "VQGAN":
-        vqgan_model = model_class(**model_config)
-        vqgan_model.learning_rate = lr
-        #cnn_model = cnn_model_class(**cnn_config)
-
-    ####
-    ## SimpleUNet
-    ####
-    #cnn_model = UNet(dim=32)
-    #cnn_model =  UNet3DWithTimestep(in_channels=1, out_channels=1)
-    #cnn_model = UNet3DAmir(in_channels=1, out_channels=1)
-
-    # #######################
-    # ### Noise scheduler ###
-    # #######################
-    # noise_scheduler_kwargs = {'beta_scheduler_type':beta_scheduler_type,
-    #                           'num_timesteps':trials_config["num_timesteps"],
-    #                           'scheduler_kwargs': scheduler_kwargs}
-    # noise_scheduler = NoiseScheduler(**noise_scheduler_kwargs)
+    #######################
+    ### Noise scheduler ###
+    #######################
+    noise_scheduler_kwargs = {'beta_scheduler_type':beta_scheduler_type,
+                              'num_timesteps':trials_config["num_timesteps"],
+                              'scheduler_kwargs': scheduler_kwargs}
+    noise_scheduler = CategoricalNoiseScheduler(**noise_scheduler_kwargs)
 
     #######################
     ### Diffusion model ###
     #######################
-    #diff_model = DiffusionModel(cnn_model, vqgan_model, noise_scheduler).to(device)
-
+    diff_model = CategoricalDiffusionModel(diffusion_model, noise_scheduler).to(device)
 
     #########################
     #########################
@@ -174,24 +215,23 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     # Initialize optimizer
     optimizer_kwargs = {"lr": lr, "weight_decay": 0}
-    #non_frozen_parameters = [p for p in diff_model.parameters() if p.requires_grad]
+    non_frozen_parameters = [p for p in diff_model.parameters() if p.requires_grad]
     optimizer = None
     #print("optimizer kwargs ", optimizer_kwargs)
 
     #print("non frozen parameters ", non_frozen_parameters)
-    # if len(non_frozen_parameters) > 0:
-    #     optimizer = getattr(optim, optimizer_name)(params=non_frozen_parameters, **optimizer_kwargs)
+    if len(non_frozen_parameters) > 0:
+        optimizer = getattr(optim, optimizer_name)(params=non_frozen_parameters, **optimizer_kwargs)
 
     print("optimizer ", optimizer)
 
-    # trial.set_user_attr("diff_model_class", diff_model.__class__)
-    # trial.set_user_attr("diff_model_name", diff_model._name)
-    # trial.set_user_attr("cnn_model_class", cnn_model.__class__)
+    trial.set_user_attr("diff_model_class", diff_model.__class__)
+    trial.set_user_attr("diff_model_name", diff_model._name)
     #trial.set_user_attr("cnn_model_name", cnn_model._name)
-    trial.set_user_attr("model_config", model_config)
-    #trial.set_user_attr("num_node_attrs", num_node_attrs)
+    trial.set_user_attr("cnn_config", cnn_config)
+    trial.set_user_attr("num_node_attrs", num_node_attrs)
     #trial.set_user_attr("gnn_model_kwargs", gnn_kwargs)
-    #trial.set_user_attr("noise_scheduler_kwargs", noise_scheduler_kwargs)
+    trial.set_user_attr("noise_scheduler_kwargs", noise_scheduler_kwargs)
     trial.set_user_attr("optimizer_class", optimizer.__class__)
     trial.set_user_attr("optimizer_kwargs", optimizer_kwargs)
     trial.set_user_attr("loss_fn", loss_fn)
@@ -207,7 +247,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     model_state_dict = {}
     optimizer_state_dict = {}
 
-    model_path = 'trial_{}_losses_model_{}'.format(trial.number, vqgan_model._name)
+    model_path = 'trial_{}_losses_model_{}'.format(trial.number, diff_model._name)
     # print("model path ", model_path)
     # if os.path.exists(model_path):
     #     print("model pat hexists")
@@ -216,96 +256,111 @@ def objective(trial, trials_config, train_loader, validation_loader):
     scheduler = None
     train = trials_config["train"] if "train" in trials_config else True
 
-    # if "scheduler" in trials_config and optimizer is not None:
-    #     trial_scheduler = trial.suggest_categorical("scheduler", trials_config["scheduler"])
-    #     print("scheduler patience: {}, factor: {}".format(trial_scheduler["patience"], trial_scheduler["factor"]))
-    #     if "class" in trial_scheduler:
-    #         if trial_scheduler["class"] == "ReduceLROnPlateau":
-    #             scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
-    #                                                        patience=trial_scheduler["patience"],
-    #                                                        factor=trial_scheduler["factor"])
-    #         else:
-    #             scheduler = lr_scheduler.StepLR(optimizer, step_size=trial_scheduler["step_size"],
-    #                                         gamma=trial_scheduler["gamma"])
-
-    # config = {
-    #     "latent_dim": trial.suggest_int("latent_dim", 64, 256),
-    #     "img_dim": 784,  # Example for MNIST
-    #     "lr": trial.suggest_loguniform("lr", 1e-5, 1e-3),
-    #     "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
-    #     "num_epochs": trial.suggest_int("num_epochs", 10, 50)
-    # }
-
-    #model = VQGAN(config)
-    from pytorch_lightning.callbacks import ModelCheckpoint
-
-    print("trial ", trial)
-
-    callbacks = []
-    callbacks.append(ModelCheckpoint(monitor='val/recon_loss',
-                                     save_top_k=3, mode='min', filename='latest_checkpoint'))
-    callbacks.append(ModelCheckpoint(every_n_train_steps=3000,
-                                     save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
-    callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
-                                     filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
-    #callbacks.append(PyTorchLightningPruningCallback(trial, monitor='val/recon_loss'))
-    #callbacks.append(Timer())
-    callbacks.append(ImageLogger(
-         batch_frequency=750, max_images=4, clamp=True))
+    if "scheduler" in trials_config and optimizer is not None:
+        trial_scheduler = trial.suggest_categorical("scheduler", trials_config["scheduler"])
+        print("scheduler patience: {}, factor: {}".format(trial_scheduler["patience"], trial_scheduler["factor"]))
+        if "class" in trial_scheduler:
+            if trial_scheduler["class"] == "ReduceLROnPlateau":
+                scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
+                                                           patience=trial_scheduler["patience"],
+                                                           factor=trial_scheduler["factor"])
+            else:
+                scheduler = lr_scheduler.StepLR(optimizer, step_size=trial_scheduler["step_size"],
+                                            gamma=trial_scheduler["gamma"])
 
 
-    # load the most recent checkpoint file
-    base_dir = os.path.join(default_root_dir, 'lightning_logs')
-    if os.path.exists(base_dir):
-        log_folder = ckpt_file = ''
-        version_id_used = step_used = 0
-        for folder in os.listdir(base_dir):
-            version_id = int(folder.split('_')[1])
-            if version_id > version_id_used:
-                version_id_used = version_id
-                log_folder = folder
-        if len(log_folder) > 0:
-            ckpt_folder = os.path.join(base_dir, log_folder, 'checkpoints')
-            for fn in os.listdir(ckpt_folder):
-                if fn == 'latest_checkpoint.ckpt':
-                    ckpt_file = 'latest_checkpoint_prev.ckpt'
-                    os.rename(os.path.join(ckpt_folder, fn),
-                              os.path.join(ckpt_folder, ckpt_file))
-            if len(ckpt_file) > 0:
-                cfg.model.resume_from_checkpoint = os.path.join(
-                    ckpt_folder, ckpt_file)
-                print('will start from the recent ckpt %s' %
-                      cfg.model.resume_from_checkpoint)
+    ################
+    ## Load VQGAN ##
+    ################
+    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(trials_config["vqgan_model_path"],
+                                                        **study.best_trial.params["model_config"])
 
-    accelerator = 'cpu'
-    if torch.cuda.is_available():
-        accelerator = 'cuda'
+    vqgan_model_checkpoint.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    vqgan_model_checkpoint.to(device)
 
-    trainer = pl.Trainer(
-        #gpus=cfg.model.gpus,
-        accumulate_grad_batches=trials_config["accumulate_grad_batches"],
-        default_root_dir=default_root_dir,
-        callbacks=callbacks,
-        #max_steps=trials_config["max_steps"],
-        max_epochs=config["num_epochs"], #trials_config["max_epochs"],
-        precision=trials_config["precision"],
-        #gradient_clip_val=cfg.model.gradient_clip_val,
-        accelerator=accelerator,
-    )
+    vqgan_model_checkpoint = get_used_codebook_indices(train_loader, vqgan_model_checkpoint)
 
-    print("trainer.logger ", trainer.logger)
 
-    trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
+    for epoch in range(config["num_epochs"]):
+        #try:
+        if train:
+            diff_model.train(True)
+            avg_loss = train_one_epoch(diff_model, vqgan_model_checkpoint, optimizer, train_loader, config, loss_fn=loss_fn, use_cuda=use_cuda)  # Train the model
 
-    # trainer = pl.Trainer(max_epochs=config["num_epochs"], gpus=1 if torch.cuda.is_available() else 0)
-    # trainer.fit(vqgan_model, train_dataloaders=train_loader)
+        diff_model.train(False)
+        if len(validation_set) == 0:
+            avg_vloss = avg_loss
+            avg_vacc = 0
+        else:
+            avg_vloss, avg_vacc = validate(diff_model, vqgan_model_checkpoint, validation_loader, config, loss_fn=loss_fn,
+                                           use_cuda=use_cuda)  # Evaluate the model
 
-    print("trainer.callback_metrics ", trainer.callback_metrics)
+        if scheduler is not None:
+            scheduler.step(avg_loss)
+            scheduler_state_dict = scheduler.state_dict()
+            print("scheduler lr: {}".format(scheduler._last_lr))
 
-    print("total training time: ", time.time()- start_time)
+        avg_loss_list.append(avg_loss)
+        avg_vloss_list.append(avg_vloss)
 
-    # Retrieve best loss
-    return trainer.callback_metrics["val/recon_loss"].item()
+        print("epoch: {}, LOSS train: {}, val: {}, ACC val: {}".format(epoch, avg_loss, avg_vloss, avg_vacc))
+
+        if avg_vloss < best_vloss:
+            best_vloss = avg_vloss
+            best_epoch = epoch
+            print("best epoch ", best_epoch)
+
+            model_state_dict = diff_model.state_dict()
+            if train:
+                optimizer_state_dict = optimizer.state_dict()
+
+            model_path_epoch = os.path.join(output_dir, model_path + "_best_{}".format(epoch))
+
+            scheduler_state_dict = scheduler.state_dict()
+
+            torch.save({
+                'best_epoch': best_epoch,
+                'best_model_state_dict': model_state_dict,
+                'best_optimizer_state_dict': optimizer_state_dict,
+                'best_scheduler_state_dict': scheduler_state_dict,
+                'train_loss': avg_loss_list,
+                'valid_loss': avg_vloss_list,
+                'training_time': time.time() - start_time,
+            }, model_path_epoch)
+
+        # For pruning (stops trial early if not promising)
+        trial.report(avg_vloss, epoch)
+        # Handle pruning based on the intermediate value.
+        # if trial.should_prune():
+        #     raise optuna.exceptions.TrialPruned()
+        # except Exception as e:
+        #    print(str(e))
+        #    return avg_vloss
+    #
+    # inv_samples, orig_samples = diff_model.sample(batch_size=batch_size_sample, inverse_transform=None)
+    #
+    # exit()
+
+    #for key, value in trial.params.items():
+    #    model_path += "_{}_{}".format(key, value)
+
+
+    #gnn_model.adj_matrix = None
+
+    model_path = os.path.join(output_dir, model_path)
+
+    torch.save({
+        'best_epoch': best_epoch,
+        'best_model_state_dict': model_state_dict,
+        'best_optimizer_state_dict': optimizer_state_dict,
+        'best_scheduler_state_dict': scheduler_state_dict,
+        'train_loss': avg_loss_list,
+        'valid_loss': avg_vloss_list,
+        'training_time': time.time() - start_time,
+    }, model_path)
+
+    return best_vloss
 
 
 def load_trials_config(path_to_config):
@@ -330,7 +385,7 @@ if __name__ == '__main__':
     use_cuda = args.cuda
 
     config = {
-              "num_epochs": trials_config["num_epochs"],
+        "num_epochs": trials_config["num_epochs"],
               "batch_size_train": trials_config["batch_size_train"],
               "batch_size_test": trials_config["batch_size_test"] if "batch_size_test" in trials_config else 250,
               "n_train_samples": trials_config["n_train_samples"] if "n_train_samples" in trials_config else None,
@@ -383,11 +438,10 @@ if __name__ == '__main__':
     random_seed = trials_config["random_seed"]
     torch.backends.cudnn.enabled = False  # Disable cuDNN use of nondeterministic algorithms
     torch.manual_seed(random_seed)
-    pl.seed_everything(random_seed)
     output_dir = os.path.join(output_dir, "seed_{}".format(random_seed))
     if os.path.exists(output_dir) and not args.append:
-        #shutil.rmtree(output_dir)
-        raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
+        shutil.rmtree(output_dir)
+        #raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
     if not args.append:
         os.mkdir(output_dir)
     elif not os.path.exists(output_dir):

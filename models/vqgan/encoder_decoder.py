@@ -277,7 +277,6 @@ class Encoder(nn.Module):
                                         padding=1)
 
     def forward(self, x):
-        print("Encoder input x.shape", x.shape)
         h = self.conv_in(x)
 
         for down in self.downs:
@@ -285,7 +284,6 @@ class Encoder(nn.Module):
                 h = block(h)
                 h = attn(h)
             h = down["downsample"](h)
-            print("downsample h.shape ", h.shape)
 
         h = self.mid.block_1(h)
         if self.use_attention:
@@ -370,7 +368,6 @@ class Decoder(nn.Module):
                 h = block(h)
                 h = up["attns"][i](h)
             h = up["upsample"](h)
-            print("upsampling h.shape ", h.shape)
 
         h = self.norm_out(h)
         h = F.silu(h)

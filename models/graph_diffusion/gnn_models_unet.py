@@ -3,9 +3,8 @@ import torch.nn as nn
 # import dgl
 # import dgl.sparse as dglsp
 from models.components import SinusoidalPosEmb
-from torch_geometric.nn import ChebConv, GCNConv
 #from torch_geometric.nn.models import GraphUNet
-from models.custom_graph_unet import GraphUNet
+from models.graph_diffusion.custom_graph_unet import GraphUNet
 from torch_geometric.data import Data
 
 

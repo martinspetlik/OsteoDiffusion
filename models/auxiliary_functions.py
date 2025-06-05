@@ -1691,5 +1691,7 @@ def get_loss_fn(loss_function):
         return MSELossLargeEmphAvg(loss_fn_params)
     elif loss_fn_name == "KL" or loss_fn_name == "cross_entropy":
         return KLLoss()
+    elif loss_fn_name == "CrossEntropy":
+        return nn.CrossEntropyLoss()
 
 

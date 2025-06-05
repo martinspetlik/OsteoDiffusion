@@ -1,13 +1,9 @@
 import os
 import sys
 import argparse
-import logging
 import joblib
-import copy
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import optuna
 from optuna.trial import TrialState
 from optuna.samplers import TPESampler, BruteForceSampler
@@ -15,16 +11,15 @@ import time
 import yaml
 import shutil
 import numpy as np
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim import lr_scheduler
 # #from torch.utils.tensorboard import SummaryWriter
 # from datetime import datetime
-from models.auxiliary_functions import get_mean_std, log_data, exp_data, quantile_transform_fit, QuantileTRF, NormalizeData, log_all_data, init_norm, log10_data, log10_all_data, get_loss_fn
+from models.auxiliary_functions import get_loss_fn
 # from metamodel.cnn.visualization.visualize_data import plot_samples, plot_dataset
-from datasets.dataset_preprocessing import prepare_dataset, get_inverse_transform
+from datasets.dataset_preprocessing import prepare_dataset
 from models.diffusion_model import DiffusionModel
-from models.gnn_models import GNN
+from models.graph_diffusion.gnn_models_unet import GNN
 from models.schedulers import NoiseScheduler
 from torch_geometric.data import DataLoader
 
@@ -68,7 +63,6 @@ def validate(model, validation_loader, loss_fn=nn.MSELoss(), acc_fn=nn.MSELoss()
     return avg_vloss, avg_vacc
 
 
-
 def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss(), use_cuda=True):
     """
     Train NN
@@ -83,16 +77,29 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
         if torch.cuda.is_available() and use_cuda:
             graphs = graphs.cuda()
 
+        #print("graphs.x.shape ", graphs.x.shape)
+
+        #print("graphs mean: {}, std: {}".format(np.mean(graphs.x.cpu().numpy()), np.std(graphs.x.cpu().numpy())))
+
+        #
+        # import matplotlib.pyplot as plt
+        # density = np.squeeze(graphs.x.cpu().numpy())
+        # fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+        # axes.hist(density, bins=100, density=True, color="red", label="density")
+        # fig.legend()
+        # plt.show()
+
+        # print("graphs ", graphs)
         # inputs = inputs.float()
         # targets = targets.float()
-        #graphs = graphs.float()
+        # graphs = graphs.float()
         optimizer.zero_grad()
 
         #print("graphs[0] ", graphs[0])
-
         #print("train one epoch graphs shape ", graphs.shape)
 
         noise, predicted_noise = model(graphs)
+
 
         # print("noise shape", noise.shape)
         # print("predicted noise shape", predicted_noise.shape)
@@ -110,7 +117,6 @@ def train_one_epoch(model, optimizer, train_loader, config, loss_fn=nn.MSELoss()
 
         # Gather data and report
         running_loss += loss.item()
-
 
     train_loss = running_loss / (i + 1)
     return train_loss
@@ -156,6 +162,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
         dataset = prepare_dataset(study, config, data_dir=data_dir,
                                                               serialize_path=output_dir)
 
+        dataset.shuffle(seed=random_seed)
+        dataset = dataset[:n_train_samples]
+
         print("len(dataset): {}".format(len(dataset)))
 
         print("config batch size train", config["batch_size_train"])
@@ -166,7 +175,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
     optimizer_name = "AdamW"
     if "optimizer_name" in trials_config:
         optimizer_name = trial.suggest_categorical("optimizer_name", trials_config["optimizer_name"])
-
 
     #####################
     #####################
@@ -249,6 +257,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     if "scheduler" in trials_config and optimizer is not None:
         trial_scheduler = trial.suggest_categorical("scheduler", trials_config["scheduler"])
+        print("scheduler patience: {}, factor: {}".format(trial_scheduler["patience"], trial_scheduler["factor"]))
         if "class" in trial_scheduler:
             if trial_scheduler["class"] == "ReduceLROnPlateau":
                 scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
@@ -258,9 +267,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
                 scheduler = lr_scheduler.StepLR(optimizer, step_size=trial_scheduler["step_size"],
                                             gamma=trial_scheduler["gamma"])
 
-
     #inverse_transform = get_inverse_transform(study)
-
     for epoch in range(config["num_epochs"]):
         #try:
         if train:
@@ -311,9 +318,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
 
     gnn_model.adj_matrix = None
-
-
-
 
     model_path = os.path.join(output_dir, model_path)
 

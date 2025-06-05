@@ -1,26 +1,42 @@
-num_diff_steps: 5
-
+num_node_attrs: 1
 optimizer_name: ["AdamW"]
 lr: [0.001] #[1e-3, 5e-4, 1e-4]
-num_epochs: 25
+num_epochs: 250
 num_trials: 100
 random_seed: 12345
-batch_size_train: [1]
+batch_size_train: [8]
 batch_size_sample: [1]
-n_train_samples: [322]
+n_train_samples: [32]
 n_test_samples: 5000
 loss_function: [["MSE", []]]
-scheduler: [{'class': "ReduceLROnPlateau", 'patience': 5, 'factor': 0.9}]
+scheduler: [{'class': "ReduceLROnPlateau", 'patience': 10, 'factor': 0.9}]
+#, {'class': "ReduceLROnPlateau", 'patience': 10, 'factor': 0.25}]
 sampler_class: BruteForceSampler
 train: True
-output_bias: True
+#output_bias: True
+gnn_config: [{"hidden_t_embd": 16, "hidden_v_embd": 16, "num_gnn_layers": 4,"dropout": 0.2, "sin_emb_dim": 64, "sin_emb_theta": 1000,
+#"gnn_layers_config": [
+#{"name": "GNNLayerChebConv", "in_channels": 1,  "out_channels": 4, 'K':3}, 
+#{"name": "GNNLayerChebConv", "in_channels": 4, "out_channels": 16, 'K':3}, 
+#{"name": "GNNLayerChebConv", "in_channels": 16,  "out_channels": 4, 'K':3},
+#{"name": "GNNLayerGCNConv", "in_channels": 1,  "out_channels": 4, 'K':3}] }]
 
+#"gnn_layers_config": [
+#{"name": "GNNLayerChebConv", "in_channels": 1,  "out_channels": 4, 'K':3}, 
+#{"name": "GNNLayerChebConv", "in_channels": 4, "out_channels": 16, 'K':3}, 
+#{"name": "GNNLayerChebConv", "in_channels": 16,  "out_channels": 4, 'K':3},
+#{"name": "GNNLayerChebConvRes", "in_channels": 1,  "out_channels": 1, 'K':3}] }]
+"gnn_layers_config": [
+{"name": "GraphUNet", "in_channels": 1, "hidden_channels": 32, "out_channels": 1, "depth": 3}, ] }]
 
-init_norm: False
-log_input: False
-gnn_config: [{"hidden_t_embd": 32, "hidden_v_embd": 4, "num_gnn_layers": 2,"dropout": 0, "sin_emb_dim": 64, "sin_emb_theta": 1000}]
-num_timesteps: 25
+#gnn_layers: {0: {"name": "GraphUNet", "in_channels": 4, "hidden_channels": 16, "out_channels": 4}}
+#gnn_encoder: [{n_layers: 3, channels: [4, 8, 16]}]
+#gnn_decoder: [{}]
+num_timesteps: 100
 normalize_input: True
+log_input: False
+input_channels: [3]
+#input_transform: {'indices': [0], 'type': "QuantileTransform"} #"RobustScaler"}
 
 
 

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # from .fp16_util import convert_module_to_f16, convert_module_to_f32
-from network.util_network import (
+from util_network import (
     checkpoint,
     conv_nd,
     linear,
@@ -399,7 +399,7 @@ class QKVAttention(nn.Module):
         return count_flops_attn(model, _x, y)
 
 
-class UNetModel(nn.Module):
+class SyntheticCTUNet(nn.Module):
     """
     The full UNet model with attention and timestep embedding.
     :param in_channels: channels in the input Tensor.

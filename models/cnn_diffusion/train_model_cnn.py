@@ -21,10 +21,10 @@ from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
 from models.cnn_diffusion.diffusion_model import DiffusionModel
 from models.schedulers import NoiseScheduler
 from torch.utils.data import DataLoader
-from models.cnn_diffusion.UNet import UNet, SimpleUNet, UNet3DWithTimestep, UNet3DAmir
+from models.cnn_diffusion.UNet import UNet, SimpleUNet
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
 from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
-from models.cnn_diffusion.vqgan import VQGAN
+from models.vqgan.adopted_codes.medical_diffusion_vqgan import VQGAN
 from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"

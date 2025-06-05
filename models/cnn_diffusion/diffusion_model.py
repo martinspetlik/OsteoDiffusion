@@ -116,8 +116,8 @@ class DiffusionModel(nn.Module):
             self.noise_scheduler.sqrt_one_minus_alphas_cumprod = self.noise_scheduler.sqrt_one_minus_alphas_cumprod.cuda()
             self.noise_scheduler.posterior_variance = self.noise_scheduler.posterior_variance.cuda()
 
-        print("p sample x shape ", x.shape)
-        print("batched timestamps ", batched_timestamps.shape)
+        #print("p sample x shape ", x.shape)
+        #print("batched timestamps ", batched_timestamps.shape)
 
 
         # if edge_indices is not None:
@@ -128,7 +128,7 @@ class DiffusionModel(nn.Module):
 
         data = x.float()
 
-        print("data with noise ", data.cpu().flatten())
+        #print("data with noise ", data.cpu().flatten())
 
         #print("data.shape ", data.shape)
 
@@ -191,17 +191,17 @@ class DiffusionModel(nn.Module):
 
             scaled_noise = torch.sqrt(posterior_variance) * noise
 
-            print("scaled noise ",  scaled_noise.cpu().flatten())
-            print("scaled noise shape ", scaled_noise.shape)
-            print("predicted mean shape ", predicted_mean.shape)
+            # print("scaled noise ",  scaled_noise.cpu().flatten())
+            # print("scaled noise shape ", scaled_noise.shape)
+            # print("predicted mean shape ", predicted_mean.shape)
 
-            x_t = predicted_mean + scaled_noise
+            #x_t = predicted_mean + scaled_noise
 
-            if timestamp in [450, 350, 250, 150, 50, 10]:
-                fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
-                axes.hist(x_t.cpu().flatten(), bins=100, density=True, label="timestep: {}".format(timestamp))
-                fig.legend()
-                plt.show()
+            # if timestamp in [450, 350, 250, 150, 50, 10]:
+            #     fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
+            #     axes.hist(x_t.cpu().flatten(), bins=100, density=True, label="timestep: {}".format(timestamp))
+            #     fig.legend()
+            #     plt.show()
 
 
 
