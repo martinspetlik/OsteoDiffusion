@@ -5,6 +5,8 @@ import importlib
 from models.vqgan.encoder_decoder import Encoder, Decoder
 from models.vqgan.vector_quantizer import VectorQuantizer
 
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
@@ -34,11 +36,14 @@ class VQGAN(pl.LightningModule):
                  remap=None,
                  sane_index_shape=False,
                  stage=1,
+                 accumulate_grad_batches=4
                  ):
         super().__init__()
         self._name = "VQGAN"
         #self.image_key = image_key
         self.automatic_optimization = False
+        self.accumulate_grad_batches = accumulate_grad_batches
+        self._grad_accum_step = 0
 
         self.encoder = Encoder(**ed_config)
         self.decoder = Decoder(**ed_config)
@@ -90,10 +95,11 @@ class VQGAN(pl.LightningModule):
         return batch[k].float()
 
     def training_step(self, batch, batch_idx):
-        x, cond = batch
-        skip_pass = 1
+        with record_function("training_step"):
+            x, cond = batch
+            skip_pass = 1
 
-        xrec, qloss = self(x)
+            xrec, qloss = self(x)
 
         optimizer_g, optimizer_d = self.optimizers()
 
@@ -107,8 +113,12 @@ class VQGAN(pl.LightningModule):
         self.log("train/recon_loss", log_dict_ae["train/rec_loss"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_ae)
         self.manual_backward(aeloss)
-        optimizer_g.step()
-        optimizer_g.zero_grad()
+
+        # Accumulate gradients manually
+        self._grad_accum_step += 1
+        if self._grad_accum_step % self.accumulate_grad_batches == 0:
+            optimizer_g.step()
+            optimizer_g.zero_grad()
         self.untoggle_optimizer(optimizer_g)
 
         # Train discriminator
@@ -121,9 +131,13 @@ class VQGAN(pl.LightningModule):
         self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_disc)
         self.manual_backward(discloss)
-        optimizer_d.step()
-        optimizer_d.zero_grad()
+
+        if self._grad_accum_step % self.accumulate_grad_batches == 0:
+            optimizer_d.step()
+            optimizer_d.zero_grad()
         self.untoggle_optimizer(optimizer_d)
+
+
 
         return {"gen_loss": aeloss, "d_loss": discloss}
 
@@ -166,7 +180,7 @@ class VQGAN(pl.LightningModule):
         log = dict()
         #source = random.choice(self.modalities)
         #target = random.choice(self.modalities)
-        x_src = batch[:1].float().to(self.device)
+        x_src = batch[:1].float()#.to(self.device)
         #x_tar = batch[:1].float().to(self.device)
         print("x_src.shape ", x_src.shape)
         xrec, _ = self(x_src)

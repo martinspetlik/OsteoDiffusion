@@ -23,11 +23,14 @@ from models.vqgan.adopted_codes.medical_diffusion_vqgan import MedicalDiffusionV
 from models.vqgan.adopted_codes.aldm_vqgan import ALDMVQGAN
 from models.vqgan.vqgan_model import VQGAN
 from models.vqgan.auxilliary_code import ImageLogger
+from torch.profiler import profile, record_function, ProfilerActivity
 from pytorch_lightning.callbacks import Timer
 #from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
 
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 def objective(trial, trials_config, train_loader, validation_loader):
     best_vloss = 1_000_000.
@@ -145,7 +148,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
     if model_class_name == "VQGAN":
         vqgan_model = model_class(**model_config)
         vqgan_model.learning_rate = lr
-        #cnn_model = cnn_model_class(**cnn_config)
+        if "accumulate_grad_batches" in config:
+            vqgan_model.accumulate_grad_batches = config["accumulate_grad_batches"]
+            #cnn_model = cnn_model_class(**cnn_config)
 
     ####
     ## SimpleUNet
@@ -281,9 +286,22 @@ def objective(trial, trials_config, train_loader, validation_loader):
     if torch.cuda.is_available():
         accelerator = 'cuda'
 
+    from pytorch_lightning.profilers import PyTorchProfiler
+    from torch.profiler import ProfilerActivity, schedule, tensorboard_trace_handler
+    import pytorch_lightning as pl
+
+    my_profiler = PyTorchProfiler(
+        schedule=schedule(wait=1, warmup=1, active=3, repeat=1),
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        on_trace_ready=tensorboard_trace_handler("./log_dir"),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True,
+    )
+
     trainer = pl.Trainer(
         #gpus=cfg.model.gpus,
-        accumulate_grad_batches=trials_config["accumulate_grad_batches"],
+        #accumulate_grad_batches=trials_config["accumulate_grad_batches"],
         default_root_dir=default_root_dir,
         callbacks=callbacks,
         #max_steps=trials_config["max_steps"],
@@ -291,6 +309,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
         precision=trials_config["precision"],
         #gradient_clip_val=cfg.model.gradient_clip_val,
         accelerator=accelerator,
+        strategy="auto",
+        #amp_backend="native",
+        profiler=my_profiler
     )
 
     print("trainer.logger ", trainer.logger)
