@@ -12,8 +12,8 @@ class BoneDatasetCT(Dataset):
 
         self.data_dir = data_dir #
 
-        self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
-        self.metadata_dir = "/mnt/database/BoneDat/raw"
+        #self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
+        self.metadata_dir = data_dir #"/mnt/database/BoneDat/raw"
 
         if not os.path.exists(self.data_dir):
             raise NotADirectoryError
