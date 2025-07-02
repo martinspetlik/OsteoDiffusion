@@ -82,8 +82,7 @@ class VQGAN(pl.LightningModule):
 
     def encode(self, x):
         print("use checkpoint ", self.use_checkpoint)
-        if self.use_checkpoint:
-            # checkpoint encoder and quant_conv together
+        if self.use_checkpoint and self.training:
             def run_encoder(x_in):
                 h = self.encoder(x_in)
                 h = self.quant_conv(h)
@@ -97,12 +96,12 @@ class VQGAN(pl.LightningModule):
 
     def decode(self, quant):
         quant = self.post_quant_conv(quant)
-        if self.use_checkpoint:
-            # checkpoint decoder
+        if self.use_checkpoint and self.training:
             dec = checkpoint(self.decoder, quant)
         else:
             dec = self.decoder(quant)
         return dec
+
     def decode_code(self, code_b):
         quant_b = self.quantize.embed_code(code_b)
         return self.decode(quant_b)
