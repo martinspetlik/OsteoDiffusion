@@ -150,6 +150,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
         vqgan_model.learning_rate = lr
         if "accumulate_grad_batches" in config:
             vqgan_model.accumulate_grad_batches = config["accumulate_grad_batches"]
+        if "use_checkpoint" in config:
+            vqgan_model.use_checkpoint = config["use_checkpoint"]
             #cnn_model = cnn_model_class(**cnn_config)
 
     ####

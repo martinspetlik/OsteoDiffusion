@@ -6,6 +6,9 @@ from models.vqgan.encoder_decoder import Encoder, Decoder
 from models.vqgan.vector_quantizer import VectorQuantizer
 
 from torch.profiler import profile, record_function, ProfilerActivity
+from torch.utils.checkpoint import checkpoint
+
+from torch.cuda.amp import autocast, GradScaler
 
 
 def get_obj_from_str(string, reload=False):
@@ -36,13 +39,15 @@ class VQGAN(pl.LightningModule):
                  remap=None,
                  sane_index_shape=False,
                  stage=1,
-                 accumulate_grad_batches=4
+                 accumulate_grad_batches=4,
+                 use_checkpoint=False
                  ):
         super().__init__()
         self._name = "VQGAN"
         #self.image_key = image_key
         self.automatic_optimization = False
         self.accumulate_grad_batches = accumulate_grad_batches
+        self.use_checkpoint = use_checkpoint
         self._grad_accum_step = 0
 
         self.encoder = Encoder(**ed_config)
@@ -62,6 +67,8 @@ class VQGAN(pl.LightningModule):
         if monitor is not None:
             self.monitor = monitor
 
+        self.scaler = GradScaler()
+
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
         for k in list(sd.keys()):
@@ -73,15 +80,28 @@ class VQGAN(pl.LightningModule):
         print(f"Restored from {path}")
 
     def encode(self, x):
-        h = self.encoder(x)
-        h = self.quant_conv(h)
+        print("use checkpoint ", self.use_checkpoint)
+        if self.use_checkpoint:
+            # checkpoint encoder and quant_conv together
+            def run_encoder(x_in):
+                h = self.encoder(x_in)
+                h = self.quant_conv(h)
+                return h
+            h = checkpoint(run_encoder, x)
+        else:
+            h = self.encoder(x)
+            h = self.quant_conv(h)
         quant, emb_loss, info = self.quantize(h)
         return quant, emb_loss, info
 
     def decode(self, quant):
         quant = self.post_quant_conv(quant)
-        return self.decoder(quant)
-
+        if self.use_checkpoint:
+            # checkpoint decoder
+            dec = checkpoint(self.decoder, quant)
+        else:
+            dec = self.decoder(quant)
+        return dec
     def decode_code(self, code_b):
         quant_b = self.quantize.embed_code(code_b)
         return self.decode(quant_b)
@@ -99,56 +119,61 @@ class VQGAN(pl.LightningModule):
             x, cond = batch
             skip_pass = 1
 
-            xrec, qloss = self(x)
+            optimizer_g, optimizer_d = self.optimizers()
 
-        optimizer_g, optimizer_d = self.optimizers()
+            # ======== Train generator ========
+            self.toggle_optimizer(optimizer_g)
+            with autocast():
+                print("training gen autocast ", torch.is_autocast_enabled())
+                xrec, qloss = self(x)
+                print("Output dtype:", xrec.dtype)
+                aeloss, log_dict_ae = self.loss(qloss, x, xrec, optimizer_idx=0,
+                                                global_step=self.global_step,
+                                                last_layer=self.get_last_layer(),
+                                                skip_pass=skip_pass, split="train")
+            self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("train/recon_loss", log_dict_ae["train/rec_loss"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log_dict(log_dict_ae)
 
-        # Train generator
-        self.toggle_optimizer(optimizer_g)
-        aeloss, log_dict_ae = self.loss(qloss, x, xrec, optimizer_idx=0,
-                                        global_step=self.global_step,
-                                        last_layer=self.get_last_layer(),
-                                        skip_pass=skip_pass, split="train")
-        self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log("train/recon_loss", log_dict_ae["train/rec_loss"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(log_dict_ae)
-        self.manual_backward(aeloss)
+            self.scaler.scale(aeloss).backward()
 
-        # Accumulate gradients manually
-        self._grad_accum_step += 1
-        if self._grad_accum_step % self.accumulate_grad_batches == 0:
-            optimizer_g.step()
-            optimizer_g.zero_grad()
-        self.untoggle_optimizer(optimizer_g)
+            # Accumulate gradients manually
+            self._grad_accum_step += 1
+            if self._grad_accum_step % self.accumulate_grad_batches == 0:
+                self.scaler.step(optimizer_g)
+                self.scaler.update()
+                optimizer_g.zero_grad(set_to_none=True)
+            self.untoggle_optimizer(optimizer_g)
 
-        # Train discriminator
-        self.toggle_optimizer(optimizer_d)
-        discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx=1,
-                                            global_step=self.global_step,
-                                            last_layer=self.get_last_layer(),
-                                            skip_pass=skip_pass, split="train")
+            # ======== Train discriminator ========
+            self.toggle_optimizer(optimizer_d)
+            with autocast():
+                print("training disc autocast ", torch.is_autocast_enabled())
+                discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx=1,
+                                                    global_step=self.global_step,
+                                                    last_layer=self.get_last_layer(),
+                                                    skip_pass=skip_pass, split="train")
+            self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log_dict(log_dict_disc)
 
-        self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(log_dict_disc)
-        self.manual_backward(discloss)
+            self.scaler.scale(discloss).backward()
+            if self._grad_accum_step % self.accumulate_grad_batches == 0:
+                self.scaler.step(optimizer_d)
+                self.scaler.update()
+                optimizer_d.zero_grad(set_to_none=True)
+            self.untoggle_optimizer(optimizer_d)
 
-        if self._grad_accum_step % self.accumulate_grad_batches == 0:
-            optimizer_d.step()
-            optimizer_d.zero_grad()
-        self.untoggle_optimizer(optimizer_d)
-
-
-
-        return {"gen_loss": aeloss, "d_loss": discloss}
+            return {"gen_loss": aeloss, "d_loss": discloss}
 
     def validation_step(self, batch, batch_idx):
         x, cond = batch
-        xrec, qloss = self(x)
-
-        aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
-                                        last_layer=self.get_last_layer(), split="val")
-        discloss, log_dict_disc = self.loss(qloss, x, xrec, 1, self.global_step,
+        with autocast():
+            print("validation autocast ", torch.is_autocast_enabled())
+            xrec, qloss = self(x)
+            aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
                                             last_layer=self.get_last_layer(), split="val")
+            discloss, log_dict_disc = self.loss(qloss, x, xrec, 1, self.global_step,
+                                                last_layer=self.get_last_layer(), split="val")
         rec_loss = log_dict_ae["val/rec_loss"]
 
         self.log("val/recon_loss", rec_loss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
