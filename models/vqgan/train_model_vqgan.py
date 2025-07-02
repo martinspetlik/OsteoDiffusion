@@ -86,6 +86,10 @@ def objective(trial, trials_config, train_loader, validation_loader):
         config["mask_loss"] = trials_config["mask_loss"]
     if "weighted_mask_loss" in trials_config:
         config["weighted_mask_loss"] = trials_config["weighted_mask_loss"]
+    if "accumulate_grad_batches" in trials_config:
+        config["accumulate_grad_batches"] = trials_config["accumulate_grad_batches"]
+    if "use_checkpoint" in trials_config:
+        config["use_checkpoint"] = trials_config["use_checkpoint"]
 
     #####################
     #####################

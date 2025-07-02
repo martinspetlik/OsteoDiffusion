@@ -8,7 +8,8 @@ from models.vqgan.vector_quantizer import VectorQuantizer
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.checkpoint import checkpoint
 
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import GradScaler
+from torch.amp import autocast
 
 
 def get_obj_from_str(string, reload=False):
@@ -123,7 +124,7 @@ class VQGAN(pl.LightningModule):
 
             # ======== Train generator ========
             self.toggle_optimizer(optimizer_g)
-            with autocast():
+            with autocast('cuda'):
                 print("training gen autocast ", torch.is_autocast_enabled())
                 xrec, qloss = self(x)
                 print("Output dtype:", xrec.dtype)
@@ -147,7 +148,7 @@ class VQGAN(pl.LightningModule):
 
             # ======== Train discriminator ========
             self.toggle_optimizer(optimizer_d)
-            with autocast():
+            with autocast('cuda'):
                 print("training disc autocast ", torch.is_autocast_enabled())
                 discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx=1,
                                                     global_step=self.global_step,
@@ -167,7 +168,7 @@ class VQGAN(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, cond = batch
-        with autocast():
+        with autocast('cuda'):
             print("validation autocast ", torch.is_autocast_enabled())
             xrec, qloss = self(x)
             aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
