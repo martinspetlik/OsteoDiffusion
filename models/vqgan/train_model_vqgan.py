@@ -23,6 +23,7 @@ from models.vqgan.adopted_codes.medical_diffusion_vqgan import MedicalDiffusionV
 from models.vqgan.adopted_codes.aldm_vqgan import ALDMVQGAN
 from models.vqgan.vqgan_model import VQGAN
 from models.vqgan.auxilliary_code import ImageLogger
+from pytorch_lightning.loggers import CSVLogger
 from torch.profiler import profile, record_function, ProfilerActivity
 from pytorch_lightning.callbacks import Timer
 #from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
@@ -261,9 +262,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
                                      filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
     #callbacks.append(PyTorchLightningPruningCallback(trial, monitor='val/recon_loss'))
     #callbacks.append(Timer())
+    #callbacks.append(CSVLogger(save_dir=os.path.join(default_root_dir, 'lightning_logs'), name="vqgan_model"))
     callbacks.append(ImageLogger(
          batch_frequency=750, max_images=4, clamp=True))
-
 
     # load the most recent checkpoint file
     base_dir = os.path.join(default_root_dir, 'lightning_logs')
@@ -305,11 +306,14 @@ def objective(trial, trials_config, train_loader, validation_loader):
         with_stack=True,
     )
 
+    csv_logger = CSVLogger(default_root_dir, name="logger")
+
     trainer = pl.Trainer(
         #gpus=cfg.model.gpus,
         #accumulate_grad_batches=trials_config["accumulate_grad_batches"],
         default_root_dir=default_root_dir,
         callbacks=callbacks,
+        logger=[csv_logger],
         #max_steps=trials_config["max_steps"],
         max_epochs=config["num_epochs"], #trials_config["max_epochs"],
         precision=trials_config["precision"],
