@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import importlib
 
 from models.vqgan.encoder_decoder import Encoder, Decoder
-from models.vqgan.vector_quantizer import VectorQuantizer
+from models.vqgan.vector_quantizer import VectorQuantizer, EMAVectorQuantizer
 
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.checkpoint import checkpoint
@@ -41,7 +41,9 @@ class VQGAN(pl.LightningModule):
                  sane_index_shape=False,
                  stage=1,
                  accumulate_grad_batches=4,
-                 use_checkpoint=False
+                 use_checkpoint=False,
+                 quantizer_type="EMA"
+
                  ):
         super().__init__()
         self._name = "VQGAN"
@@ -53,8 +55,16 @@ class VQGAN(pl.LightningModule):
 
         self.encoder = Encoder(**ed_config)
         self.decoder = Decoder(**ed_config)
-        self.quantize = VectorQuantizer(**vq_config,
-                                        remap=remap, sane_index_shape=sane_index_shape)
+
+        if quantizer_type == "EMA":
+            self.quantize = EMAVectorQuantizer(**vq_config,
+                                            remap=remap, sane_index_shape=sane_index_shape)
+
+        else:
+            self.quantize = VectorQuantizer(**vq_config,
+                                            remap=remap, sane_index_shape=sane_index_shape)
+
+        print("quantizer ", self.quantize)
 
         self.loss = instantiate_from_config(loss_config)
 
@@ -164,6 +174,16 @@ class VQGAN(pl.LightningModule):
             self.untoggle_optimizer(optimizer_d)
 
             return {"gen_loss": aeloss, "d_loss": discloss}
+
+    def on_train_epoch_start(self):
+        self.quantize.reset_index_usage()  # Replace with correct attribute
+
+    def on_train_epoch_end(self):
+        usage = self.quantize.index_usage_counts  # Tensor shape: [num_embeddings]
+        num_used = torch.count_nonzero(usage)
+        usage_percent = 100.0 * num_used.item() / usage.numel()
+        self.log("train/used_codebook_percent", usage_percent)
+        self.log("train/used_codebook_count", num_used)
 
     def validation_step(self, batch, batch_idx):
         x, cond = batch

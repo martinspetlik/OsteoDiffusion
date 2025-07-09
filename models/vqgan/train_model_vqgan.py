@@ -79,9 +79,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
         validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
 
-    optimizer_name = "AdamW"
-    if "optimizer_name" in trials_config:
-        optimizer_name = trial.suggest_categorical("optimizer_name", trials_config["optimizer_name"])
+    # optimizer_name = "AdamW"
+    # if "optimizer_name" in trials_config:
+    #     optimizer_name = trial.suggest_categorical("optimizer_name", trials_config["optimizer_name"])
 
     if "mask_loss" in trials_config:
         config["mask_loss"] = trials_config["mask_loss"]
@@ -254,7 +254,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     print("trial ", trial)
 
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor='val/recon_loss',
+    callbacks.append(ModelCheckpoint(monitor='train/recon_loss_epoch',
                                      save_top_k=3, mode='min', filename='latest_checkpoint'))
     callbacks.append(ModelCheckpoint(every_n_train_steps=3000,
                                      save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
@@ -335,8 +335,10 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     print("total training time: ", time.time()- start_time)
 
+    print(trainer.callback_metrics["train/recon_loss_epoch"])
+
     # Retrieve best loss
-    return trainer.callback_metrics["val/recon_loss"].item()
+    return trainer.callback_metrics["train/recon_loss_epoch"].item()
 
 
 def load_trials_config(path_to_config):
