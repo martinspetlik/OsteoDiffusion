@@ -175,6 +175,21 @@ class VQGAN(pl.LightningModule):
 
             return {"gen_loss": aeloss, "d_loss": discloss}
 
+    def compute_token_usage_entropy(self, usage_counts):
+        """
+        usage_counts: torch.Tensor of shape [num_embeddings], dtype=int
+        Returns: (entropy, normalized_entropy)
+        """
+        counts = usage_counts.float()
+        probs = counts / counts.sum()
+        mask = probs > 0
+        entropy = -torch.sum(probs[mask] * torch.log2(probs[mask]))
+
+        max_entropy = torch.log2(torch.tensor(len(usage_counts), dtype=probs.dtype))
+        normalized_entropy = entropy / max_entropy
+
+        return entropy.item(), normalized_entropy.item()
+
     def on_train_epoch_start(self):
         self.quantize.reset_index_usage()  # Replace with correct attribute
 
@@ -182,8 +197,16 @@ class VQGAN(pl.LightningModule):
         usage = self.quantize.index_usage_counts  # Tensor shape: [num_embeddings]
         num_used = torch.count_nonzero(usage)
         usage_percent = 100.0 * num_used.item() / usage.numel()
+        # self.log("train/used_codebook_percent", usage_percent)
+        # self.log("train/used_codebook_count", num_used)
+
+        # Compute entropy
+        entropy, norm_entropy = self.compute_token_usage_entropy(usage)
+
         self.log("train/used_codebook_percent", usage_percent)
         self.log("train/used_codebook_count", num_used)
+        self.log("train/codebook_entropy", entropy)
+        self.log("train/codebook_entropy_norm", norm_entropy)
 
     def validation_step(self, batch, batch_idx):
         x, cond = batch

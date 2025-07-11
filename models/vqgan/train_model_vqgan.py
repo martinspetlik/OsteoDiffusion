@@ -33,6 +33,7 @@ from pytorch_lightning.callbacks import Timer
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+
 def objective(trial, trials_config, train_loader, validation_loader):
     best_vloss = 1_000_000.
     best_epoch = 0
@@ -324,15 +325,21 @@ def objective(trial, trials_config, train_loader, validation_loader):
         profiler=my_profiler
     )
 
+    model_file_path = None
+    if "model_file_path" in trials_config:
+        model_file_path = trials_config["model_file_path"]
+
     print("trainer.logger ", trainer.logger)
 
-    trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
+    if model_file_path is not None:
+        trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader, ckpt_path=model_file_path)
+    else:
+        trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
 
     # trainer = pl.Trainer(max_epochs=config["num_epochs"], gpus=1 if torch.cuda.is_available() else 0)
     # trainer.fit(vqgan_model, train_dataloaders=train_loader)
 
     print("trainer.callback_metrics ", trainer.callback_metrics)
-
     print("total training time: ", time.time()- start_time)
 
     print(trainer.callback_metrics["train/recon_loss_epoch"])
