@@ -239,7 +239,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, *, base_channels, channel_mults=(1, 2, 4, 8), num_res_blocks,
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, out_channels=1,
-                 resolution, z_channels, use_attention, **ignore_kwargs):
+                 resolution, z_channels, use_attention, out_activation=None, **ignore_kwargs):
         super().__init__()
         self.ch = base_channels
         self.num_res_blocks = num_res_blocks
@@ -248,6 +248,18 @@ class Decoder(nn.Module):
         self.z_channels = z_channels
         self.use_attention = use_attention
         self.ups = nn.ModuleList([])
+
+        # final activation layer
+        if out_activation == 'tanh':
+            self.output_activation = nn.Tanh()
+        elif out_activation == 'sigmoid':
+            self.output_activation = nn.Sigmoid()
+        elif out_activation is None:
+            self.output_activation = nn.Identity()
+        else:
+            raise ValueError(f"Unsupported output activation: {out_activation}")
+
+        print("self.output_activation ", self.output_activation)
 
         dims = [base_channels * m for m in channel_mults]
         in_out = list(zip(dims[::-1][:-1], dims[::-1][1:]))
@@ -287,7 +299,6 @@ class Decoder(nn.Module):
                 "upsample": upsample
             }))
 
-
         # final normalization and output conv
         self.norm_out = Normalize(dim_out)
         self.conv_out = nn.Conv3d(dim_out, out_channels, kernel_size=3, stride=1, padding=1)
@@ -312,4 +323,5 @@ class Decoder(nn.Module):
         h = F.silu(h, inplace=True)
         h = self.conv_out(h)
 
-        return h
+        # apply final activation
+        return self.output_activation(h)
