@@ -30,7 +30,6 @@ from pytorch_lightning.callbacks import Timer
 
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
-
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
@@ -255,12 +254,12 @@ def objective(trial, trials_config, train_loader, validation_loader):
     print("trial ", trial)
 
     callbacks = []
-    callbacks.append(ModelCheckpoint(monitor='train/recon_loss_epoch',
+    callbacks.append(ModelCheckpoint(monitor='train/generator_total_loss',
                                      save_top_k=3, mode='min', filename='latest_checkpoint'))
-    callbacks.append(ModelCheckpoint(every_n_train_steps=3000,
-                                     save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
-    callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
-                                     filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
+    # callbacks.append(ModelCheckpoint(every_n_train_steps=3000,
+    #                                  save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
+    # callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
+    #                                  filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
     #callbacks.append(PyTorchLightningPruningCallback(trial, monitor='val/recon_loss'))
     #callbacks.append(Timer())
     #callbacks.append(CSVLogger(save_dir=os.path.join(default_root_dir, 'lightning_logs'), name="vqgan_model"))
@@ -342,10 +341,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
     print("trainer.callback_metrics ", trainer.callback_metrics)
     print("total training time: ", time.time()- start_time)
 
-    print(trainer.callback_metrics["train/recon_loss_epoch"])
-
+    print(trainer.callback_metrics["train/generator_total_loss"])
     # Retrieve best loss
-    return trainer.callback_metrics["train/recon_loss_epoch"].item()
+    return trainer.callback_metrics["train/generator_total_loss"].item()
 
 
 def load_trials_config(path_to_config):
