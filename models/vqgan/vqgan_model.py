@@ -34,17 +34,13 @@ class VQGAN(pl.LightningModule):
                  vq_config,
                  ckpt_path=None,
                  ignore_keys=[],
-                 #image_key="image",
-                 #colorize_nlabels=None,
                  monitor=None,
                  remap=None,
                  sane_index_shape=False,
                  stage=1,
                  accumulate_grad_batches=4,
                  use_checkpoint=False,
-                 quantizer_type="EMA"
-
-                 ):
+                 quantizer_type="EMA"):
         super().__init__()
         self._name = "VQGAN"
         #self.image_key = image_key
@@ -131,7 +127,7 @@ class VQGAN(pl.LightningModule):
 
             optimizer_g, optimizer_d = self.optimizers()
 
-            # ======== Train generator ========
+            # ======== Train generator (encoder + decoder) ========
             self.toggle_optimizer(optimizer_g)
             with autocast('cuda'):
                 #print("training gen autocast ", torch.is_autocast_enabled())
@@ -158,14 +154,17 @@ class VQGAN(pl.LightningModule):
 
             self.scaler.scale(aeloss).backward()
 
-            # Accumulate gradients manually
             self._grad_accum_step += 1
             if self._grad_accum_step % self.accumulate_grad_batches == 0:
+                # Clip gradients for encoder + decoder
+                torch.nn.utils.clip_grad_norm_(list(self.encoder.parameters()) + list(self.decoder.parameters()),
+                                               max_norm=1.0)
                 self.scaler.step(optimizer_g)
                 self.scaler.update()
                 optimizer_g.zero_grad(set_to_none=True)
             self.untoggle_optimizer(optimizer_g)
 
+            # ======== Train discriminator (inside self.loss) ========
             # ======== Train discriminator ========
             self.toggle_optimizer(optimizer_d)
             with autocast('cuda'):
@@ -179,7 +178,13 @@ class VQGAN(pl.LightningModule):
             self.log("train/logits_fake",  metrics_dict["logits_fake"], prog_bar=False, logger=True, on_step=True, on_epoch=True)
 
             self.scaler.scale(discloss).backward()
+
             if self._grad_accum_step % self.accumulate_grad_batches == 0:
+                # Clip gradients for the discriminator inside self.loss
+                if hasattr(self.loss, "discriminator"):
+                    torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(), max_norm=1.0)
+                else:
+                    print("No discriminator found in self.loss. Skipping gradient clipping.")
                 self.scaler.step(optimizer_d)
                 self.scaler.update()
                 optimizer_d.zero_grad(set_to_none=True)

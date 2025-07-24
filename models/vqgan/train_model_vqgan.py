@@ -263,8 +263,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
     #callbacks.append(PyTorchLightningPruningCallback(trial, monitor='val/recon_loss'))
     #callbacks.append(Timer())
     #callbacks.append(CSVLogger(save_dir=os.path.join(default_root_dir, 'lightning_logs'), name="vqgan_model"))
-    callbacks.append(ImageLogger(
-         batch_frequency=750, max_images=4, clamp=True))
+    # callbacks.append(ImageLogger(
+    #      batch_frequency=750, max_images=4, clamp=True))
 
     # load the most recent checkpoint file
     base_dir = os.path.join(default_root_dir, 'lightning_logs')
