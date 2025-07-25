@@ -146,7 +146,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
         nll_loss = rec_loss
 
         # Perceptual loss (with optional gradient scaling)
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             p_loss = self.perceptual_loss(inputs, reconstructions).mean()
 
         p_loss = p_loss * self.perceptual_grad_scaling
@@ -182,14 +182,15 @@ class VQLPIPSWithDiscriminator(nn.Module):
                     self.entropy_weight * entropy_loss
             )
 
+            print("loss ", loss)
             if skip_pass != 0 and disc_factor > 0 and torch.isfinite(g_loss):
                 loss += skip_pass * disc_factor * g_loss
 
             metrics = {
-                "generator_total_loss": loss.detach(),
+                "generator_total_loss": loss.clone().detach().mean(),
                 "codebook_loss": codebook_loss.detach().mean(),
-                "reconstruction_loss": rec_loss.detach(),
-                "perceptual_loss": p_loss.detach(),
+                "reconstruction_loss": rec_loss.detach().mean(),
+                "perceptual_loss": p_loss.detach().mean(),
                 "entropy_loss": entropy_loss.detach(),
                 "adversarial_generator_loss": g_loss.detach(),
                 "disc_factor": torch.tensor(disc_factor),
