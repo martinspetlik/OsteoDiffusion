@@ -175,21 +175,15 @@ class VQLPIPSWithDiscriminator(nn.Module):
             print("skip_pass ", skip_pass)
             print("disc_factor ", disc_factor)
 
-            if skip_pass != 0:
-                loss = (
+            loss = (
                     self.pixel_weight * nll_loss +
                     self.perceptual_weight * p_loss +
-                    skip_pass * disc_factor * g_loss +
                     codebook_w * codebook_loss.mean() +
                     self.entropy_weight * entropy_loss
-                )
-            else:
-                loss = (
-                        self.pixel_weight * nll_loss +
-                        self.perceptual_weight * p_loss +
-                        codebook_w * codebook_loss.mean() +
-                        self.entropy_weight * entropy_loss
-                )
+            )
+
+            if skip_pass != 0 and disc_factor > 0 and torch.isfinite(g_loss):
+                loss += skip_pass * disc_factor * g_loss
 
             metrics = {
                 "generator_total_loss": loss.detach(),
