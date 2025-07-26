@@ -114,6 +114,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
         self.num_codebook_embeddings = num_codebook_embeddings
         self.use_l2 = use_l2
         self.perceptual_grad_scaling = perceptual_grad_scaling
+        self.LPIPS_type = LPIPS_type
 
         # Discriminator
         self.discriminator = NLayerDiscriminator(input_num_channels=disc_in_channels,
@@ -126,10 +127,10 @@ class VQLPIPSWithDiscriminator(nn.Module):
         self.disc_loss = hinge_d_loss if disc_loss == "hinge" else vanilla_d_loss
 
         # Perceptual loss
-        if LPIPS_type == "aldm":
-            self.perceptual_loss = LPIPSALDM().eval()
-        elif LPIPS_type == "medical_diffusion":
-            self.perceptual_loss = LPIPSMedicalDiffusion().eval()
+        if self.LPIPS_type == "aldm":
+            self.perceptual_loss_model = LPIPSALDM().eval()
+        elif self.LPIPS_type == "medical_diffusion":
+            self.perceptual_loss_model = LPIPSMedicalDiffusion().eval()
 
         self.disc_factor = disc_factor
         print(f"[VQLPIPS] Perceptual weight: {perceptual_weight}, entropy weight: {entropy_weight}")
@@ -145,11 +146,29 @@ class VQLPIPSWithDiscriminator(nn.Module):
             rec_loss = F.l1_loss(inputs, reconstructions)
         nll_loss = rec_loss
 
-        # Perceptual loss (with optional gradient scaling)
-        with torch.amp.autocast('cuda', enabled=False):
-            p_loss = self.perceptual_loss(inputs, reconstructions).mean()
+        # # Perceptual loss (with optional gradient scaling)
 
-        p_loss = p_loss * self.perceptual_grad_scaling
+        if self.LPIPS_type == "medical_diffusion":
+            B, C, T, H, W = inputs.shape
+            # Selects one random 2D image from each 3D Image
+            frame_idx = torch.randint(0, T, [B]).cuda()
+            frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
+            frames = torch.gather(inputs, 2, frame_idx_selected).squeeze(2)
+            frames_recon = torch.gather(reconstructions, 2, frame_idx_selected).squeeze(2)
+            # Perceptual loss
+            p_loss = 0
+            if self.perceptual_weight > 0:
+                p_loss = self.perceptual_loss_model(frames, frames_recon).mean() * self.perceptual_weight
+        else:
+            # with torch.amp.autocast('cuda', enabled=False):
+            #     p_loss = self.perceptual_loss(inputs, reconstructions).mean()
+            # with torch.no_grad():
+            #     p_loss = self.perceptual_loss(inputs, reconstructions)
+            # p_loss = p_loss.detach().mean()
+            # p_loss = self.perceptual_loss(inputs, reconstructions)
+            # p_loss = p_loss.mean()
+            p_loss = torch.tensor(0.0)
+            p_loss = p_loss * self.perceptual_grad_scaling
 
         # Entropy loss
         entropy_loss = torch.tensor(0.0, device=inputs.device)
