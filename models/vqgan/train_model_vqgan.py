@@ -23,10 +23,15 @@ from models.vqgan.adopted_codes.medical_diffusion_vqgan import MedicalDiffusionV
 from models.vqgan.adopted_codes.aldm_vqgan import ALDMVQGAN
 from models.vqgan.vqgan_model import VQGAN
 from models.vqgan.auxilliary_code import ImageLogger
-from pytorch_lightning.loggers import CSVLogger
-from torch.profiler import profile, record_function, ProfilerActivity
-from pytorch_lightning.callbacks import Timer
-#from models.cnn_diffusion.synthetic_CT_Unet import SyntheticCTUNet
+from pytorch_lightning.loggers import CSVLogger, MLFlowLogger
+
+import mlflow
+from mlflow import log_params, log_metric
+from pytorch_lightning.profilers import PyTorchProfiler
+from torch.profiler import ProfilerActivity, schedule, tensorboard_trace_handler
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from models.mlflow_wrapper import MLflowWrapper
 
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #os.environ["CUDA_VISIBLE_DEVICES"]=""
@@ -34,30 +39,12 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def objective(trial, trials_config, train_loader, validation_loader):
-    best_vloss = 1_000_000.
-    best_epoch = 0
-    save_model_best_epoch = 0
+    # === Hyperparameter suggestions ===
     lr = trial.suggest_categorical("lr", trials_config["lr"])
     batch_size_train = trial.suggest_categorical("batch_size_train", trials_config["batch_size_train"])
     batch_size_sample = trial.suggest_categorical("batch_size_sample", trials_config["batch_size_sample"])
     config["batch_size_train"] = batch_size_train
     config["batch_size_sample"] = batch_size_sample
-
-    ####
-    # Noise scheduler config
-    ####
-    beta_scheduler_type = "linear"
-    scheduler_kwargs = {}
-    if "beta_scheduler_type" in trials_config:
-        beta_scheduler_type = trials_config["beta_scheduler_type"]
-    if "scheduler_kwargs" in trials_config:
-        scheduler_kwargs = trials_config["scheduler_kwargs"]
-
-    loss_function = ["MSE", []]
-    if "loss_function" in trials_config:
-        loss_function = trial.suggest_categorical("loss_function", trials_config["loss_function"])
-
-    loss_fn = get_loss_fn(loss_function)
 
     if "n_train_samples" in trials_config and trials_config["n_train_samples"] is not None:
         n_train_samples = trial.suggest_categorical("n_train_samples", trials_config["n_train_samples"])
@@ -66,236 +53,69 @@ def objective(trial, trials_config, train_loader, validation_loader):
         if "n_test_samples" in trials_config and trials_config["n_test_samples"] is not None:
             config["n_test_samples"] = trials_config["n_test_samples"]
 
-        # if "sub_datasets" in config and len(config["sub_datasets"]) > 0:
-        #     train_set, validation_set, test_set = prepare_sub_datasets(study, config, data_dir=data_dir,
-        #                                                                serialize_path=output_dir)
-        # else:
-
         train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
-
-        print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set), len(test_set)))
 
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
         validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
 
-    # optimizer_name = "AdamW"
-    # if "optimizer_name" in trials_config:
-    #     optimizer_name = trial.suggest_categorical("optimizer_name", trials_config["optimizer_name"])
-
-    if "mask_loss" in trials_config:
-        config["mask_loss"] = trials_config["mask_loss"]
-    if "weighted_mask_loss" in trials_config:
-        config["weighted_mask_loss"] = trials_config["weighted_mask_loss"]
     if "accumulate_grad_batches" in trials_config:
         config["accumulate_grad_batches"] = trials_config["accumulate_grad_batches"]
     if "use_checkpoint" in trials_config:
         config["use_checkpoint"] = trials_config["use_checkpoint"]
 
-    #####################
-    #####################
-    #  Initilize model #
-    ####################
-    ####################
-
-    ##################################
-    ### Graph neural network model ###
-    ##################################
+    # === Model init ===
     model_config = {}
     if "model_config" in trials_config:
         model_config = trial.suggest_categorical("model_config", trials_config["model_config"])
 
-    #num_node_attrs = trials_config["num_node_attrs"]
-
-    ####
-    ## SimpleUNet
-    ####
-    model_class_name = "SimpleUNet"
-    if "model_class_name" in trials_config:
-        model_class_name = trials_config["model_class_name"]
-
-    # if model_class_name == "SimpleUNet":
-    #      model_class = SimpleUNet
-    # elif model_class_name == "UNet":
-    #     model_class = UNet
-    # elif model_class_name == "MedicalDiffusionUNet3D":
-    #     model_class = MedicalDiffusionUNet3D
-    # elif model_class_name == "MedicalDiffusionUNet3DOwn":
-    #     model_class = MedicalDiffusionUNet3DOwn
-    # elif model_class_name == "SyntheticCTUNet":
-    #     model_class = SyntheticCTUNet
-    cnn_model_class = MedicalDiffusionUNet3D
-    if model_class_name == "MedicalDiffusionVQGAN":
-        model_class = MedicalDiffusionVQGAN
-    if model_class_name == "ALDMVQGAN":
-        model_class = ALDMVQGAN
-    if model_class_name == "VQGAN":
-        model_class = VQGAN
-
-    #cnn_kwargs = {'dim': 32, 'channels': 1}
-    #cnn_model = UNet(**cnn_kwargs)
-    #cnn_model = UNet3DMedicalDiffusion(**cnn_kwargs)
-    print("model_config ", model_config)
+    model_class_name = trials_config.get("model_class_name", "VQGAN")
+    model_class = {"MedicalDiffusionVQGAN": MedicalDiffusionVQGAN, "ALDMVQGAN": ALDMVQGAN, "VQGAN": VQGAN}[model_class_name]
 
     default_root_dir = output_dir
 
-    print("model class", model_class)
     if model_class_name == "MedicalDiffusionVQGAN":
         from types import SimpleNamespace
         model_config["default_root_dir"] = default_root_dir
         cfg = SimpleNamespace(**{"model": SimpleNamespace(**model_config)})
         vqgan_model = model_class(cfg)
-
-    if model_class_name == "ALDMVQGAN":
-        vqgan_model = model_class(**model_config)
-        vqgan_model.learning_rate = lr
-        #cnn_model = cnn_model_class(**cnn_config)
-    if model_class_name == "VQGAN":
+    else:
         vqgan_model = model_class(**model_config)
         vqgan_model.learning_rate = lr
         if "accumulate_grad_batches" in config:
             vqgan_model.accumulate_grad_batches = config["accumulate_grad_batches"]
         if "use_checkpoint" in config:
             vqgan_model.use_checkpoint = config["use_checkpoint"]
-            #cnn_model = cnn_model_class(**cnn_config)
 
-    ####
-    ## SimpleUNet
-    ####
-    #cnn_model = UNet(dim=32)
-    #cnn_model =  UNet3DWithTimestep(in_channels=1, out_channels=1)
-    #cnn_model = UNet3DAmir(in_channels=1, out_channels=1)
-
-    # #######################
-    # ### Noise scheduler ###
-    # #######################
-    # noise_scheduler_kwargs = {'beta_scheduler_type':beta_scheduler_type,
-    #                           'num_timesteps':trials_config["num_timesteps"],
-    #                           'scheduler_kwargs': scheduler_kwargs}
-    # noise_scheduler = NoiseScheduler(**noise_scheduler_kwargs)
-
-    #######################
-    ### Diffusion model ###
-    #######################
-    #diff_model = DiffusionModel(cnn_model, vqgan_model, noise_scheduler).to(device)
-
-
-    #########################
-    #########################
-    #########################
-
-    # Initialize optimizer
-    optimizer_kwargs = {"lr": lr, "weight_decay": 0}
-    #non_frozen_parameters = [p for p in diff_model.parameters() if p.requires_grad]
-    optimizer = None
-    #print("optimizer kwargs ", optimizer_kwargs)
-
-    #print("non frozen parameters ", non_frozen_parameters)
-    # if len(non_frozen_parameters) > 0:
-    #     optimizer = getattr(optim, optimizer_name)(params=non_frozen_parameters, **optimizer_kwargs)
-
-    print("optimizer ", optimizer)
-
-    # trial.set_user_attr("diff_model_class", diff_model.__class__)
-    # trial.set_user_attr("diff_model_name", diff_model._name)
-    # trial.set_user_attr("cnn_model_class", cnn_model.__class__)
-    #trial.set_user_attr("cnn_model_name", cnn_model._name)
     trial.set_user_attr("model_config", model_config)
-    #trial.set_user_attr("num_node_attrs", num_node_attrs)
-    #trial.set_user_attr("gnn_model_kwargs", gnn_kwargs)
-    #trial.set_user_attr("noise_scheduler_kwargs", noise_scheduler_kwargs)
-    trial.set_user_attr("optimizer_class", optimizer.__class__)
-    trial.set_user_attr("optimizer_kwargs", optimizer_kwargs)
-    trial.set_user_attr("loss_fn", loss_fn)
     trial.set_user_attr("trials_config", trials_config)
 
-    # Training of the model
-    start_time = time.time()
-    avg_loss_list = []
-    avg_vloss_list = []
-    avg_vloss_list = []
-    avg_vloss, avg_loss = best_vloss, best_vloss
-    best_epoch = 0
-    model_state_dict = {}
-    optimizer_state_dict = {}
+    ####################
+    # Start MLflow Run #
+    ####################
+    # with mlf.start_run(nested=True):
+    #     mlf.set_tag("model_class", model_class_name)
+    #     mlf.log_params(config)
+        # mlf.log_params({
+        #     "lr": lr,
+        #     "batch_size_train": batch_size_train,
+        #     "batch_size_sample": batch_size_sample,
+        #     "loss_function": loss_function[0] if isinstance(loss_function, list) else str(loss_function),
+        #     "model_config": model_config,
+        #     "accumulate_grad_batches": config.get("accumulate_grad_batches", None),
+        #     "use_checkpoint": config.get("use_checkpoint", None),
+        #     "precision": trials_config["precision"],
+        #     "random_seed": trials_config["random_seed"]
+        # })
 
-    model_path = 'trial_{}_losses_model_{}'.format(trial.number, vqgan_model._name)
-    # print("model path ", model_path)
-    # if os.path.exists(model_path):
-    #     print("model pat hexists")
-    #     return avg_vloss
+    callbacks = [ModelCheckpoint(
+        monitor='train/generator_total_loss',
+        save_top_k=3,
+        mode='min',
+        filename='latest_checkpoint'
+    )]
 
-    scheduler = None
-    train = trials_config["train"] if "train" in trials_config else True
-
-    # if "scheduler" in trials_config and optimizer is not None:
-    #     trial_scheduler = trial.suggest_categorical("scheduler", trials_config["scheduler"])
-    #     print("scheduler patience: {}, factor: {}".format(trial_scheduler["patience"], trial_scheduler["factor"]))
-    #     if "class" in trial_scheduler:
-    #         if trial_scheduler["class"] == "ReduceLROnPlateau":
-    #             scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode="min",
-    #                                                        patience=trial_scheduler["patience"],
-    #                                                        factor=trial_scheduler["factor"])
-    #         else:
-    #             scheduler = lr_scheduler.StepLR(optimizer, step_size=trial_scheduler["step_size"],
-    #                                         gamma=trial_scheduler["gamma"])
-
-    # config = {
-    #     "latent_dim": trial.suggest_int("latent_dim", 64, 256),
-    #     "img_dim": 784,  # Example for MNIST
-    #     "lr": trial.suggest_loguniform("lr", 1e-5, 1e-3),
-    #     "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
-    #     "num_epochs": trial.suggest_int("num_epochs", 10, 50)
-    # }
-
-    #model = VQGAN(config)
-    from pytorch_lightning.callbacks import ModelCheckpoint
-
-    print("trial ", trial)
-
-    callbacks = []
-    callbacks.append(ModelCheckpoint(monitor='train/generator_total_loss',
-                                     save_top_k=3, mode='min', filename='latest_checkpoint'))
-    # callbacks.append(ModelCheckpoint(every_n_train_steps=3000,
-    #                                  save_top_k=-1, filename='{epoch}-{step}-{train/recon_loss:.2f}'))
-    # callbacks.append(ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1,
-    #                                  filename='{epoch}-{step}-10000-{train/recon_loss:.2f}'))
-    #callbacks.append(PyTorchLightningPruningCallback(trial, monitor='val/recon_loss'))
-    #callbacks.append(Timer())
-    #callbacks.append(CSVLogger(save_dir=os.path.join(default_root_dir, 'lightning_logs'), name="vqgan_model"))
-    # callbacks.append(ImageLogger(
-    #      batch_frequency=750, max_images=4, clamp=True))
-
-    # load the most recent checkpoint file
-    base_dir = os.path.join(default_root_dir, 'lightning_logs')
-    if os.path.exists(base_dir):
-        log_folder = ckpt_file = ''
-        version_id_used = step_used = 0
-        for folder in os.listdir(base_dir):
-            version_id = int(folder.split('_')[1])
-            if version_id > version_id_used:
-                version_id_used = version_id
-                log_folder = folder
-        if len(log_folder) > 0:
-            ckpt_folder = os.path.join(base_dir, log_folder, 'checkpoints')
-            for fn in os.listdir(ckpt_folder):
-                if fn == 'latest_checkpoint.ckpt':
-                    ckpt_file = 'latest_checkpoint_prev.ckpt'
-                    os.rename(os.path.join(ckpt_folder, fn),
-                              os.path.join(ckpt_folder, ckpt_file))
-            if len(ckpt_file) > 0:
-                cfg.model.resume_from_checkpoint = os.path.join(
-                    ckpt_folder, ckpt_file)
-                print('will start from the recent ckpt %s' %
-                      cfg.model.resume_from_checkpoint)
-
-    accelerator = 'cpu'
-    if torch.cuda.is_available():
-        accelerator = 'cuda'
-
-    from pytorch_lightning.profilers import PyTorchProfiler
-    from torch.profiler import ProfilerActivity, schedule, tensorboard_trace_handler
-    import pytorch_lightning as pl
+    accelerator = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     my_profiler = PyTorchProfiler(
         schedule=schedule(wait=1, warmup=1, active=3, repeat=1),
@@ -303,47 +123,45 @@ def objective(trial, trials_config, train_loader, validation_loader):
         on_trace_ready=tensorboard_trace_handler("./log_dir"),
         record_shapes=True,
         profile_memory=True,
-        with_stack=True,
-    )
+        with_stack=True)
 
-    csv_logger = CSVLogger(default_root_dir, name="logger")
+    loggers = [CSVLogger(default_root_dir, name="logger")]
+
+    mlf_logger = mlf.get_logger()
+    if mlf_logger is not None:
+        mlf_logger.log_hyperparams(config)
+        mlf_logger.log_hyperparams({"lr": lr, "model_config": model_config, "precision": trials_config["precision"]})
+        loggers.append(mlf_logger)
 
     trainer = pl.Trainer(
-        #gpus=cfg.model.gpus,
-        #accumulate_grad_batches=trials_config["accumulate_grad_batches"],
         default_root_dir=default_root_dir,
         callbacks=callbacks,
-        logger=[csv_logger],
-        #max_steps=trials_config["max_steps"],
-        max_epochs=config["num_epochs"], #trials_config["max_epochs"],
+        logger=loggers,
+        max_epochs=config["num_epochs"],
         precision=trials_config["precision"],
-        #gradient_clip_val=cfg.model.gradient_clip_val,
         accelerator=accelerator,
         strategy="auto",
-        #amp_backend="native",
         profiler=my_profiler
     )
 
-    model_file_path = None
-    if "model_file_path" in trials_config:
-        model_file_path = trials_config["model_file_path"]
+    model_file_path = trials_config.get("model_file_path", None)
 
-    print("trainer.logger ", trainer.logger)
-
-    if model_file_path is not None:
+    start_time = time.time()
+    if model_file_path:
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader, ckpt_path=model_file_path)
     else:
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
 
-    # trainer = pl.Trainer(max_epochs=config["num_epochs"], gpus=1 if torch.cuda.is_available() else 0)
-    # trainer.fit(vqgan_model, train_dataloaders=train_loader)
+    loss = trainer.callback_metrics["train/generator_total_loss"].item()
+    #mlf.log_metric("train_generator_total_loss", loss)
+    #mlf.log_metric("training_duration_sec", training_duration)
 
-    print("trainer.callback_metrics ", trainer.callback_metrics)
-    print("total training time: ", time.time()- start_time)
+    # Optional: Log model checkpoint artifact (if available)
+    checkpoint_dir = os.path.join(default_root_dir, "lightning_logs")
+    if os.path.exists(checkpoint_dir):
+        mlf.log_artifacts(checkpoint_dir, artifact_path="checkpoints")
 
-    print(trainer.callback_metrics["train/generator_total_loss"])
-    # Retrieve best loss
-    return trainer.callback_metrics["train/generator_total_loss"].item()
+    return loss
 
 
 def load_trials_config(path_to_config):
@@ -359,6 +177,7 @@ if __name__ == '__main__':
     parser.add_argument('output_dir', help='Output directory')
     parser.add_argument("-c", "--cuda", default=False, action='store_true', help="use cuda")
     parser.add_argument("-a", "--append", default=False, action='store_true', help="append models")
+    parser.add_argument("-m", "--mlflow", default=False, action='store_true', help="use mlflow to track experiments")
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -370,30 +189,22 @@ if __name__ == '__main__':
     config = {
               "num_epochs": trials_config["num_epochs"],
               "batch_size_train": trials_config["batch_size_train"],
-              "batch_size_test": trials_config["batch_size_test"] if "batch_size_test" in trials_config else 250,
+              "batch_size_test": trials_config["batch_size_test"] if "batch_size_test" in trials_config else 1,
               "n_train_samples": trials_config["n_train_samples"] if "n_train_samples" in trials_config else None,
               "n_test_samples": trials_config["n_test_samples"] if "n_test_samples" in trials_config else None,
               "train_samples_ratio": trials_config["train_samples_ratio"] if "train_samples_ratio" in trials_config else 0.9,
               "val_samples_ratio": trials_config["val_samples_ratio"] if "val_samples_ratio" in trials_config else 0.2,
-              "print_batches": 10,
-              "init_norm": trials_config["init_norm"] if "init_norm" in trials_config else False,
-              "init_norm_use_all_features": trials_config["init_norm_use_all_features"] if "init_norm_use_all_features" in trials_config else False,
-              "log_all_input_channels": trials_config["log_all_input_channels"] if "log_all_input_channels" in trials_config else False,
-              "log_input": trials_config["log_input"] if "log_input" in trials_config else True,
-              "normalize_input": trials_config["normalize_input"] if "normalize_input" in trials_config else True,
-              "log_output": trials_config["log_output"] if "log_output" in trials_config else False,
-              "log10_output": trials_config["log10_output"] if "log10_output" in trials_config else False,
-              "log_all_output": trials_config["log_all_output"] if "log_all_output" in trials_config else False,
-              "log10_all_output": trials_config["log10_all_output"] if "log10_all_output" in trials_config else False,
-              "normalize_output": trials_config["normalize_output"] if "normalize_output" in trials_config else True,
-              "input_channels": trials_config["input_channels"] if "input_channels" in trials_config else None,
-              "output_channels": trials_config["output_channels"] if "output_channels" in trials_config else None,
-              "fractures_sep": trials_config["fractures_sep"] if "fractures_sep" in trials_config else False,
-              "cross_section": trials_config["cross_section"] if "cross_section" in trials_config else False,
               "seed": trials_config["random_seed"] if "random_seed" in trials_config else 12345,
               "output_dir": output_dir,
-              "sub_datasets": trials_config["sub_datasets"] if "sub_datasets" in trials_config else {}
               }
+
+    mlf = MLflowWrapper(args.mlflow)
+
+    if args.mlflow:
+        mlflow_config = trials_config["mlflow_config"]
+        assert "tracking_uri" in mlflow_config, "MLFlow tracking uri is missing in the configuration"
+        mlf.set_tracking_uri(mlflow_config["tracking_uri"])
+        mlf.set_experiment(mlflow_config["experiment_name"])
 
     if "input_transform" in trials_config:
         config["input_transform"] = trials_config["input_transform"]
