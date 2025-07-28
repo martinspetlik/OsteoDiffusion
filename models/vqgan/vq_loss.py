@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +17,14 @@ def weights_init(m):
 
 def adopt_weight(weight, global_step, threshold):
     return weight if global_step >= threshold else 0.0
+
+def adopt_weight_ramp(weight, global_step, threshold, ramp_duration=1000):
+    if global_step < threshold:
+        return 0.0
+    elif global_step < threshold + ramp_duration:
+        return weight * (global_step - threshold) / ramp_duration
+    else:
+        return weight
 
 
 def compute_entropy_loss(codebook_indices, num_codes):
@@ -38,6 +47,61 @@ def vanilla_d_loss(logits_real, logits_fake):
         torch.mean(torch.nn.functional.softplus(-logits_real)) +
         torch.mean(torch.nn.functional.softplus(logits_fake)))
     return d_loss
+
+
+class ImageNLayerDiscriminator(nn.Module):
+    def __init__(self, input_num_channels, num_base_filters=64, n_layers=3, norm_layer=nn.SyncBatchNorm, use_sigmoid=False, getIntermFeat=True):
+        # def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d, use_sigmoid=False, getIntermFeat=True):
+        super(ImageNLayerDiscriminator, self).__init__()
+        self.getIntermFeat = getIntermFeat
+        self.n_layers = n_layers
+
+        kw = 4
+        padw = int(np.ceil((kw-1.0)/2))
+        sequence = [[nn.Conv2d(input_num_channels, num_base_filters, kernel_size=kw,
+                               stride=2, padding=padw), nn.LeakyReLU(0.2, True)]]
+
+        nf = num_base_filters
+        for n in range(1, n_layers):
+            nf_prev = nf
+            nf = min(nf * 2, 512)
+            sequence += [[
+                nn.Conv2d(nf_prev, nf, kernel_size=kw, stride=2, padding=padw),
+                norm_layer(nf), nn.LeakyReLU(0.2, True)
+            ]]
+
+        nf_prev = nf
+        nf = min(nf * 2, 512)
+        sequence += [[
+            nn.Conv2d(nf_prev, nf, kernel_size=kw, stride=1, padding=padw),
+            norm_layer(nf),
+            nn.LeakyReLU(0.2, True)
+        ]]
+
+        sequence += [[nn.Conv2d(nf, 1, kernel_size=kw,
+                                stride=1, padding=padw)]]
+
+        if use_sigmoid:
+            sequence += [[nn.Sigmoid()]]
+
+        if getIntermFeat:
+            for n in range(len(sequence)):
+                setattr(self, 'model'+str(n), nn.Sequential(*sequence[n]))
+        else:
+            sequence_stream = []
+            for n in range(len(sequence)):
+                sequence_stream += sequence[n]
+            self.model = nn.Sequential(*sequence_stream)
+
+    def forward(self, input):
+        if self.getIntermFeat:
+            res = [input]
+            for n in range(self.n_layers+2):
+                model = getattr(self, 'model'+str(n))
+                res.append(model(res[-1]))
+            return res[-1], res[1:]
+        else:
+            return self.model(input), _
 
 
 class NLayerDiscriminator(nn.Module):
@@ -105,7 +169,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
                  disc_num_layers=3, disc_in_channels=1, disc_factor=1.0, disc_weight=1.0,
                  perceptual_weight=1.0, entropy_weight=0.1, disc_conditional=False,
                  disc_num_filters=32, disc_loss="hinge", num_codebook_embeddings=256,
-                 use_l2=False, perceptual_grad_scaling=1.0, LPIPS_type="aldm"):
+                 use_l2=False, perceptual_grad_scaling=1.0, LPIPS_type="aldm", discriminator_type="NLayerDiscriminator", disc_ramp_duration=0):
         super().__init__()
         self.codebook_weight = codebook_weight
         self.pixel_weight = pixelloss_weight
@@ -115,11 +179,19 @@ class VQLPIPSWithDiscriminator(nn.Module):
         self.use_l2 = use_l2
         self.perceptual_grad_scaling = perceptual_grad_scaling
         self.LPIPS_type = LPIPS_type
+        self.discriminator_type = discriminator_type
+        self.disc_ramp_duration = disc_ramp_duration
 
-        # Discriminator
-        self.discriminator = NLayerDiscriminator(input_num_channels=disc_in_channels,
-                                                 n_layers=disc_num_layers,
-                                                 num_base_filters=disc_num_filters).apply(weights_init)
+        if discriminator_type == "NLayerDiscriminator":
+            # Discriminator
+            self.discriminator = NLayerDiscriminator(input_num_channels=disc_in_channels,
+                                                     n_layers=disc_num_layers,
+                                                     num_base_filters=disc_num_filters).apply(weights_init)
+        elif discriminator_type == "ImageNLayerDiscriminator":
+            self.discriminator = ImageNLayerDiscriminator(input_num_channels=disc_in_channels,
+                                                     n_layers=disc_num_layers,
+                                                     num_base_filters=disc_num_filters).apply(weights_init)
+
         self.discriminator_iter_start = disc_start
         self.disc_conditional = disc_conditional
         self.discriminator_weight = disc_weight
@@ -147,14 +219,15 @@ class VQLPIPSWithDiscriminator(nn.Module):
         nll_loss = rec_loss
 
         # # Perceptual loss (with optional gradient scaling)
-
-        if self.LPIPS_type == "medical_diffusion":
+        if self.LPIPS_type == "medical_diffusion" or self.discriminator_type == "ImageNLayerDiscriminator":
             B, C, T, H, W = inputs.shape
             # Selects one random 2D image from each 3D Image
             frame_idx = torch.randint(0, T, [B]).cuda()
             frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
             frames = torch.gather(inputs, 2, frame_idx_selected).squeeze(2)
             frames_recon = torch.gather(reconstructions, 2, frame_idx_selected).squeeze(2)
+
+        if self.LPIPS_type == "medical_diffusion":
             # Perceptual loss
             p_loss = 0
             if self.perceptual_weight > 0:
@@ -177,14 +250,19 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
         # Generator update
         if optimizer_idx == 0:
-            logits_fake = self.discriminator(torch.cat((reconstructions, cond), dim=1) if cond is not None else reconstructions)
+            if self.discriminator_type == "ImageNLayerDiscriminator":
+                logits_fake, _ = self.discriminator(frames_recon)
+            else:
+                logits_fake = self.discriminator(reconstructions)
             g_loss = -torch.mean(logits_fake)
+
+            print("g loss ", g_loss)
 
             if torch.isnan(g_loss).any():
                 print("NaN in g_loss")
                 g_loss = torch.tensor(0.0, device=inputs.device)
 
-            disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
+            disc_factor = adopt_weight_ramp(self.disc_factor, global_step, threshold=self.discriminator_iter_start, ramp_duration=self.disc_ramp_duration)
             codebook_w = adopt_weight(self.codebook_weight, global_step, threshold=self.discriminator_iter_start)
 
             if torch.isnan(codebook_loss).any():
@@ -219,8 +297,14 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
         # Discriminator update
         if optimizer_idx == 1:
-            logits_real = self.discriminator(torch.cat((inputs.detach(), cond), dim=1) if cond is not None else inputs.detach())
-            logits_fake = self.discriminator(torch.cat((reconstructions.detach(), cond), dim=1) if cond is not None else reconstructions.detach())
+            if self.discriminator_type == "ImageNLayerDiscriminator":
+                logits_real, _ = self.discriminator(frames.detach())
+            else:
+                logits_real = self.discriminator(inputs.detach())
+            if self.discriminator_type == "ImageNLayerDiscriminator":
+                logits_fake, _ = self.discriminator(frames_recon.detach())
+            else:
+                logits_fake = self.discriminator(reconstructions.detach())
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
             d_loss = skip_pass * disc_factor * self.disc_loss(logits_real, logits_fake)
