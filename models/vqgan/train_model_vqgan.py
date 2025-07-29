@@ -129,9 +129,13 @@ def objective(trial, trials_config, train_loader, validation_loader):
     csv_logger = CSVLogger(default_root_dir, name="logger")
     loggers = [csv_logger]
 
+    checkpoint_filename = trials_config.get("model_checkpoint_filename", 'latest_checkpoint')
+
     callbacks = [
         ModelCheckpoint(monitor='train/generator_total_loss',
-                        save_top_k=save_top_k, mode='min', filename='latest_checkpoint'),
+                        save_top_k=save_top_k, mode='min',
+                        filename=checkpoint_filename #'latest_checkpoint'
+                        ),
         DiscriminatorActiveCheckpoint(
             monitor='train/generator_total_loss',
             disc_start=model_config["loss_config"].get("disc_start", 0),
