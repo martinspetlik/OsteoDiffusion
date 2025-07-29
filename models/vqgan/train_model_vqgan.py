@@ -124,18 +124,19 @@ def objective(trial, trials_config, train_loader, validation_loader):
         #     "random_seed": trials_config["random_seed"]
         # })
 
+    save_top_k = trials_config.get("save_top_k", 3)
 
     csv_logger = CSVLogger(default_root_dir, name="logger")
     loggers = [csv_logger]
 
     callbacks = [
         ModelCheckpoint(monitor='train/generator_total_loss',
-                        save_top_k=3, mode='min', filename='latest_checkpoint'),
+                        save_top_k=save_top_k, mode='min', filename='latest_checkpoint'),
         DiscriminatorActiveCheckpoint(
             monitor='train/generator_total_loss',
             disc_start=model_config["loss_config"].get("disc_start", 0),
             disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
-            save_top_k=3,
+            save_top_k=save_top_k,
             dirpath=csv_logger.log_dir
         )
     ]
@@ -149,7 +150,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
         record_shapes=True,
         profile_memory=True,
         with_stack=True)
-
 
     mlf_logger = mlf.get_logger()
     if mlf_logger is not None:
