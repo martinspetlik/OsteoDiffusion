@@ -40,7 +40,10 @@ class VQGAN(pl.LightningModule):
                  stage=1,
                  accumulate_grad_batches=4,
                  use_checkpoint=False,
-                 quantizer_type="EMA"):
+                 quantizer_type="EMA",
+                 generator_learning_rate=1e-5,
+                 discriminator_learning_rate=2e-4,
+                 gradient_clip=False):
         super().__init__()
         self._name = "VQGAN"
         #self.image_key = image_key
@@ -48,6 +51,9 @@ class VQGAN(pl.LightningModule):
         self.accumulate_grad_batches = accumulate_grad_batches
         self.use_checkpoint = use_checkpoint
         self._grad_accum_step = 0
+        self.generator_learning_rate = generator_learning_rate
+        self.discriminator_learning_rate = discriminator_learning_rate
+        self.gradient_clip = gradient_clip
 
         self.encoder = Encoder(**ed_config)
         self.decoder = Decoder(**ed_config)
@@ -75,6 +81,7 @@ class VQGAN(pl.LightningModule):
             self.monitor = monitor
 
         self.scaler = GradScaler()
+
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -151,14 +158,21 @@ class VQGAN(pl.LightningModule):
                      on_epoch=True)
             self.log("train/adversarial_generator_loss", metrics_dict["adversarial_generator_loss"],
                      prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("train/g_2d_loss", metrics_dict["g_2d_loss"],
+                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("train/g_3d_loss", metrics_dict["g_3d_loss"],
+                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("train/disc_factor", metrics_dict["disc_factor"],
+                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
 
             self.scaler.scale(aeloss).backward()
 
             self._grad_accum_step += 1
             if self._grad_accum_step % self.accumulate_grad_batches == 0:
-                # Clip gradients for encoder + decoder
-                torch.nn.utils.clip_grad_norm_(list(self.encoder.parameters()) + list(self.decoder.parameters()),
-                                               max_norm=1.0)
+                if self.gradient_clip:
+                    # Clip gradients for encoder + decoder
+                    torch.nn.utils.clip_grad_norm_(list(self.encoder.parameters()) + list(self.decoder.parameters()),
+                                                   max_norm=1.0)
                 self.scaler.step(optimizer_g)
                 self.scaler.update()
                 optimizer_g.zero_grad(set_to_none=True)
@@ -174,17 +188,22 @@ class VQGAN(pl.LightningModule):
                                                     last_layer=self.get_last_layer(),
                                                     skip_pass=skip_pass, split="train")
             self.log("train/discriminator_total_loss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/logits_real", metrics_dict["logits_real"], prog_bar=False, logger=True, on_step=True,on_epoch=True)
-            self.log("train/logits_fake",  metrics_dict["logits_fake"], prog_bar=False, logger=True, on_step=True, on_epoch=True)
+            self.log("train/logits_2d_real", metrics_dict["logits_2d_real"], prog_bar=False, logger=True, on_step=True,on_epoch=True)
+            self.log("train/logits_2d_fake",  metrics_dict["logits_2d_fake"], prog_bar=False, logger=True, on_step=True, on_epoch=True)
+            self.log("train/logits_3d_real", metrics_dict["logits_3d_real"], prog_bar=False, logger=True, on_step=True,
+                     on_epoch=True)
+            self.log("train/logits_3d_fake", metrics_dict["logits_2d_fake"], prog_bar=False, logger=True, on_step=True,
+                     on_epoch=True)
 
             self.scaler.scale(discloss).backward()
 
             if self._grad_accum_step % self.accumulate_grad_batches == 0:
                 # Clip gradients for the discriminator inside self.loss
-                if hasattr(self.loss, "discriminator"):
-                    torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(), max_norm=1.0)
-                else:
-                    print("No discriminator found in self.loss. Skipping gradient clipping.")
+                if self.gradient_clip:
+                    if hasattr(self.loss, "discriminator"):
+                        torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(), max_norm=1.0)
+                    else:
+                        print("No discriminator found in self.loss. Skipping gradient clipping.")
                 self.scaler.step(optimizer_d)
                 self.scaler.update()
                 optimizer_d.zero_grad(set_to_none=True)
@@ -269,7 +288,6 @@ class VQGAN(pl.LightningModule):
         return metrics_dict["generator_total_loss"]
 
     def configure_optimizers(self):
-        lr = self.learning_rate
         for p in self.encoder.parameters(): p.requires_grad = True
         for p in self.decoder.parameters(): p.requires_grad = True
         opt_ae = torch.optim.Adam(
@@ -278,9 +296,14 @@ class VQGAN(pl.LightningModule):
             list(self.quantize.parameters()) +
             list(self.quant_conv.parameters()) +
             list(self.post_quant_conv.parameters()),
-            lr=lr, betas=(0.5, 0.9)
+            lr=self.generator_learning_rate, betas=(0.5, 0.9)
         )
-        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(), lr=lr, betas=(0.5, 0.9))
+
+        if self.loss.discriminator_2d is not None and self.loss.discriminator_3d is not None:
+            opt_disc = torch.optim.Adam(list(self.loss.discriminator_2d.parameters()) + list(self.loss.discriminator_3d.parameters()), lr=self.discriminator_learning_rate,
+                                        betas=(0.5, 0.9))
+        else:
+            opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(), lr=self.discriminator_learning_rate, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
