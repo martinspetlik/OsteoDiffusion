@@ -49,10 +49,10 @@ def vanilla_d_loss(logits_real, logits_fake):
     return d_loss
 
 
-class ImageNLayerDiscriminator(nn.Module):
-    def __init__(self, input_num_channels, num_base_filters=64, n_layers=3, norm_layer=nn.SyncBatchNorm, use_sigmoid=False, getIntermFeat=True):
+class NLayerDiscriminator2D(nn.Module):
+    def __init__(self, input_num_channels, num_base_filters=64, n_layers=3, norm_layer=nn.InstanceNorm2d, use_sigmoid=False, getIntermFeat=True):
         # def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d, use_sigmoid=False, getIntermFeat=True):
-        super(ImageNLayerDiscriminator, self).__init__()
+        super(NLayerDiscriminator2D, self).__init__()
         self.getIntermFeat = getIntermFeat
         self.n_layers = n_layers
 
@@ -79,6 +79,60 @@ class ImageNLayerDiscriminator(nn.Module):
         ]]
 
         sequence += [[nn.Conv2d(nf, 1, kernel_size=kw,
+                                stride=1, padding=padw)]]
+
+        if use_sigmoid:
+            sequence += [[nn.Sigmoid()]]
+
+        if getIntermFeat:
+            for n in range(len(sequence)):
+                setattr(self, 'model'+str(n), nn.Sequential(*sequence[n]))
+        else:
+            sequence_stream = []
+            for n in range(len(sequence)):
+                sequence_stream += sequence[n]
+            self.model = nn.Sequential(*sequence_stream)
+
+    def forward(self, input):
+        if self.getIntermFeat:
+            res = [input]
+            for n in range(self.n_layers+2):
+                model = getattr(self, 'model'+str(n))
+                res.append(model(res[-1]))
+            return res[-1], res[1:]
+        else:
+            return self.model(input), _
+
+
+class NLayerDiscriminator3D(nn.Module):
+    def __init__(self, input_num_channels, num_base_filters=64, n_layers=3, norm_layer=nn.InstanceNorm3d, use_sigmoid=False, getIntermFeat=True):
+        super(NLayerDiscriminator3D, self).__init__()
+        self.getIntermFeat = getIntermFeat
+        self.n_layers = n_layers
+
+        kw = 4
+        padw = int(np.ceil((kw-1.0)/2))
+        sequence = [[nn.Conv3d(input_num_channels, num_base_filters, kernel_size=kw,
+                               stride=2, padding=padw), nn.LeakyReLU(0.2, True)]]
+
+        nf = num_base_filters
+        for n in range(1, n_layers):
+            nf_prev = nf
+            nf = min(nf * 2, 512)
+            sequence += [[
+                nn.Conv3d(nf_prev, nf, kernel_size=kw, stride=2, padding=padw),
+                norm_layer(nf), nn.LeakyReLU(0.2, True)
+            ]]
+
+        nf_prev = nf
+        nf = min(nf * 2, 512)
+        sequence += [[
+            nn.Conv3d(nf_prev, nf, kernel_size=kw, stride=1, padding=padw),
+            norm_layer(nf),
+            nn.LeakyReLU(0.2, True)
+        ]]
+
+        sequence += [[nn.Conv3d(nf, 1, kernel_size=kw,
                                 stride=1, padding=padw)]]
 
         if use_sigmoid:
@@ -169,7 +223,8 @@ class VQLPIPSWithDiscriminator(nn.Module):
                  disc_num_layers=3, disc_in_channels=1, disc_factor=1.0, disc_weight=1.0,
                  perceptual_weight=1.0, entropy_weight=0.1, disc_conditional=False,
                  disc_num_filters=32, disc_loss="hinge", num_codebook_embeddings=256,
-                 use_l2=False, perceptual_grad_scaling=1.0, LPIPS_type="aldm", discriminator_type="NLayerDiscriminator", disc_ramp_duration=0):
+                 use_l2=False, perceptual_grad_scaling=1.0, LPIPS_type="aldm", discriminator_type="NLayerDiscriminator",
+                 disc_ramp_duration=0, gan_weight_2d=1.0, gan_weight_3d=1.0):
         super().__init__()
         self.codebook_weight = codebook_weight
         self.pixel_weight = pixelloss_weight
@@ -182,15 +237,24 @@ class VQLPIPSWithDiscriminator(nn.Module):
         self.discriminator_type = discriminator_type
         self.disc_ramp_duration = disc_ramp_duration
 
+        self.discriminator = None
+        self.discriminator_2d = None
+        self.discriminator_3d = None
+        self.gan_weight_2d = gan_weight_2d
+        self.gan_weight_3d = gan_weight_3d
+
         if discriminator_type == "NLayerDiscriminator":
             # Discriminator
             self.discriminator = NLayerDiscriminator(input_num_channels=disc_in_channels,
                                                      n_layers=disc_num_layers,
                                                      num_base_filters=disc_num_filters).apply(weights_init)
         elif discriminator_type == "ImageNLayerDiscriminator":
-            self.discriminator = ImageNLayerDiscriminator(input_num_channels=disc_in_channels,
-                                                     n_layers=disc_num_layers,
-                                                     num_base_filters=disc_num_filters).apply(weights_init)
+            self.discriminator_2d = NLayerDiscriminator2D(input_num_channels=disc_in_channels,
+                                                       n_layers=disc_num_layers,
+                                                       num_base_filters=disc_num_filters).apply(weights_init)
+            self.discriminator_3d = NLayerDiscriminator3D(input_num_channels=disc_in_channels,
+                                                          n_layers=disc_num_layers,
+                                                          num_base_filters=disc_num_filters).apply(weights_init)
 
         self.discriminator_iter_start = disc_start
         self.disc_conditional = disc_conditional
@@ -248,13 +312,21 @@ class VQLPIPSWithDiscriminator(nn.Module):
         if codebook_indices is not None:
             entropy_loss = compute_entropy_loss(codebook_indices, self.num_codebook_embeddings)
 
+        g_2d_loss = None
+        g_3d_loss = None
         # Generator update
         if optimizer_idx == 0:
             if self.discriminator_type == "ImageNLayerDiscriminator":
-                logits_fake, _ = self.discriminator(frames_recon)
+                logits_2d_fake, pred_2d_fake = self.discriminator_2d(frames_recon)
+                logits_3d_fake, pred_3d_fake = self.discriminator_3d(reconstructions)
+                g_2d_loss = -torch.mean(logits_2d_fake)
+                print("g_2d_loss ", g_2d_loss)
+                g_3d_loss = -torch.mean(logits_3d_fake)
+                print("g_3d_loss ", g_3d_loss)
+                g_loss = self.gan_weight_2d * g_2d_loss + self.gan_weight_3d * g_3d_loss
             else:
                 logits_fake = self.discriminator(reconstructions)
-            g_loss = -torch.mean(logits_fake)
+                g_loss = -torch.mean(logits_fake)
 
             print("g loss ", g_loss)
 
@@ -292,27 +364,46 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 "adversarial_generator_loss": g_loss.detach(),
                 "disc_factor": torch.tensor(disc_factor),
                 "codebook_weight": torch.tensor(codebook_w),
+                "g_2d_loss": g_2d_loss,
+                "g_3d_loss": g_3d_loss,
             }
+
             return loss, metrics
 
         # Discriminator update
         if optimizer_idx == 1:
+            disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
+            d_2d_loss, d_3d_loss = 0, 0
             if self.discriminator_type == "ImageNLayerDiscriminator":
-                logits_real, _ = self.discriminator(frames.detach())
+                logits_2d_real, _ = self.discriminator_2d(frames.detach())
+                logits_3d_real, _ = self.discriminator_3d(inputs.detach())
+
+                logits_2d_fake, _ = self.discriminator_2d(frames_recon.detach())
+                logits_3d_fake, _ = self.discriminator_3d(reconstructions.detach())
+
+                d_2d_loss = self.disc_loss(logits_2d_real, logits_2d_fake)
+                d_3d_loss = self.disc_loss(logits_3d_real, logits_3d_fake)
+                d_loss = disc_factor * (self.gan_weight_2d * d_2d_loss + self.gan_weight_3d * d_3d_loss)
+
+                log = {
+                    "disc_loss": d_loss.detach(),
+                    "logits_2d_real": logits_2d_real.mean().detach(),
+                    "logits_2d_fake": logits_2d_fake.mean().detach(),
+                    "logits_3d_real": logits_3d_real.mean().detach(),
+                    "logits_3d_fake": logits_3d_fake.mean().detach(),
+                }
+
             else:
                 logits_real = self.discriminator(inputs.detach())
-            if self.discriminator_type == "ImageNLayerDiscriminator":
-                logits_fake, _ = self.discriminator(frames_recon.detach())
-            else:
                 logits_fake = self.discriminator(reconstructions.detach())
+                d_loss = skip_pass * disc_factor * self.disc_loss(logits_real, logits_fake)
 
-            disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
-            d_loss = skip_pass * disc_factor * self.disc_loss(logits_real, logits_fake)
-
-            log = {
-                "disc_loss": d_loss.detach(),
-                "logits_real": logits_real.mean().detach(),
-                "logits_fake": logits_fake.mean().detach(),
-            }
+                log = {
+                    "disc_loss": d_loss.detach(),
+                    "logits_2d_real": logits_real.mean().detach(),
+                    "logits_2d_fake": logits_fake.mean().detach(),
+                    "logits_3d_real": logits_real.mean().detach(),
+                    "logits_3d_fake": logits_fake.mean().detach(),
+                }
 
             return d_loss, log

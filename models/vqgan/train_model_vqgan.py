@@ -31,6 +31,7 @@ from pytorch_lightning.profilers import PyTorchProfiler
 from torch.profiler import ProfilerActivity, schedule, tensorboard_trace_handler
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
+from models.vqgan.discriminator_active_callback import DiscriminatorActiveCheckpoint
 from models.mlflow_wrapper import MLflowWrapper
 
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -59,10 +60,19 @@ def objective(trial, trials_config, train_loader, validation_loader):
         validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
 
+    generator_learning_rate = None
+    if "generator_learning_rate" in trials_config:
+        generator_learning_rate = trial.suggest_categorical("generator_learning_rate", trials_config["generator_learning_rate"])
+    discriminator_learning_rate = None
+    if "discriminator_learning_rate" in trials_config:
+        discriminator_learning_rate = trial.suggest_categorical("discriminator_learning_rate", trials_config["discriminator_learning_rate"])
+
     if "accumulate_grad_batches" in trials_config:
         config["accumulate_grad_batches"] = trials_config["accumulate_grad_batches"]
     if "use_checkpoint" in trials_config:
         config["use_checkpoint"] = trials_config["use_checkpoint"]
+    if "gradient_clip" in trials_config:
+        config["gradient_clip"] = trials_config["gradient_clip"]
 
     # === Model init ===
     model_config = {}
@@ -80,12 +90,18 @@ def objective(trial, trials_config, train_loader, validation_loader):
         cfg = SimpleNamespace(**{"model": SimpleNamespace(**model_config)})
         vqgan_model = model_class(cfg)
     else:
+        if generator_learning_rate is not None:
+            model_config["generator_learning_rate"] = generator_learning_rate
+        if discriminator_learning_rate is not None:
+            model_config["discriminator_learning_rate"] = discriminator_learning_rate
+        if "accumulate_grad_batches" in config:
+            model_config["accumulate_grad_batches"] = config["accumulate_grad_batches"]
+        if "use_checkpoint" in config:
+            model_config["use_checkpoint"] = config["use_checkpoint"]
+        if "gradient_clip" in config:
+            model_config["gradient_clip"] = config["gradient_clip"]
         vqgan_model = model_class(**model_config)
         vqgan_model.learning_rate = lr
-        if "accumulate_grad_batches" in config:
-            vqgan_model.accumulate_grad_batches = config["accumulate_grad_batches"]
-        if "use_checkpoint" in config:
-            vqgan_model.use_checkpoint = config["use_checkpoint"]
 
     trial.set_user_attr("model_config", model_config)
     trial.set_user_attr("trials_config", trials_config)
@@ -108,12 +124,21 @@ def objective(trial, trials_config, train_loader, validation_loader):
         #     "random_seed": trials_config["random_seed"]
         # })
 
-    callbacks = [ModelCheckpoint(
-        monitor='train/generator_total_loss',
-        save_top_k=3,
-        mode='min',
-        filename='latest_checkpoint'
-    )]
+
+    csv_logger = CSVLogger(default_root_dir, name="logger")
+    loggers = [csv_logger]
+
+    callbacks = [
+        ModelCheckpoint(monitor='train/generator_total_loss',
+                        save_top_k=3, mode='min', filename='latest_checkpoint'),
+        DiscriminatorActiveCheckpoint(
+            monitor='train/generator_total_loss',
+            disc_start=model_config["loss_config"].get("disc_start", 0),
+            disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
+            save_top_k=3,
+            dirpath=csv_logger.log_dir
+        )
+    ]
 
     accelerator = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -125,12 +150,17 @@ def objective(trial, trials_config, train_loader, validation_loader):
         profile_memory=True,
         with_stack=True)
 
-    loggers = [CSVLogger(default_root_dir, name="logger")]
 
     mlf_logger = mlf.get_logger()
     if mlf_logger is not None:
         mlf_logger.log_hyperparams(config)
-        mlf_logger.log_hyperparams({"lr": lr, "model_config": model_config, "precision": trials_config["precision"]})
+        log_params_dict = {"lr": lr,
+                           "generator_learning_rate": generator_learning_rate,
+                           "discriminator_learning_rate": discriminator_learning_rate,
+                           "model_config": model_config,
+                           "precision": trials_config["precision"]}
+
+        mlf_logger.log_hyperparams(log_params_dict)
         loggers.append(mlf_logger)
 
     trainer = pl.Trainer(
