@@ -374,6 +374,24 @@ class VQGAN(pl.LightningModule):
         log["recon"] = xrec
         return log
 
+    def load_pretrained_generator_only(self, ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        state_dict = ckpt["state_dict"]
+
+        # Filter out only generator-related weights
+        generator_keys = [k for k in state_dict if k.startswith("encoder") or
+                          k.startswith("decoder") or
+                          k.startswith("quantize") or
+                          k.startswith("quant_conv") or
+                          k.startswith("post_quant_conv")]
+
+        generator_state_dict = {k: state_dict[k] for k in generator_keys}
+        missing, unexpected = self.load_state_dict(generator_state_dict, strict=False)
+
+        print(f"Loaded generator weights from {ckpt_path}")
+        print(f"Missing keys: {missing}")
+        print(f"Unexpected keys: {unexpected}")
+
     # def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
     #     if batch_idx >= self.max_batches:
     #         return
