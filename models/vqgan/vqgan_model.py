@@ -43,7 +43,8 @@ class VQGAN(pl.LightningModule):
                  quantizer_type="EMA",
                  generator_learning_rate=1e-5,
                  discriminator_learning_rate=2e-4,
-                 gradient_clip=False):
+                 gradient_clip=False,
+                 freeze_generator=False):
         super().__init__()
         self._name = "VQGAN"
         #self.image_key = image_key
@@ -54,6 +55,7 @@ class VQGAN(pl.LightningModule):
         self.generator_learning_rate = generator_learning_rate
         self.discriminator_learning_rate = discriminator_learning_rate
         self.gradient_clip = gradient_clip
+        self.freeze_generator = freeze_generator
 
         self.encoder = Encoder(**ed_config)
         self.decoder = Decoder(**ed_config)
@@ -81,7 +83,6 @@ class VQGAN(pl.LightningModule):
             self.monitor = monitor
 
         self.scaler = GradScaler()
-
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -134,52 +135,44 @@ class VQGAN(pl.LightningModule):
 
             optimizer_g, optimizer_d = self.optimizers()
 
-            # ======== Train generator (encoder + decoder) ========
-            self.toggle_optimizer(optimizer_g)
-            with autocast('cuda'):
-                #print("training gen autocast ", torch.is_autocast_enabled())
-                xrec, qloss = self(x)
-                #print("Output dtype:", xrec.dtype)
-                aeloss, metrics_dict = self.loss(qloss, x, xrec, optimizer_idx=0,
-                                                global_step=self.global_step,
-                                                last_layer=self.get_last_layer(),
-                                                skip_pass=skip_pass, split="train")
+            # ======== Train generator (only if not frozen) ========
+            if not self.freeze_generator:
+                self.toggle_optimizer(optimizer_g)
+                with autocast('cuda'):
+                    xrec, qloss = self(x)
+                    aeloss, metrics_dict = self.loss(
+                        qloss, x, xrec, optimizer_idx=0,
+                        global_step=self.global_step,
+                        last_layer=self.get_last_layer(),
+                        skip_pass=skip_pass, split="train")
 
-            # Rename log keys here to match the internal log dict keys
-            self.log("train/generator_total_loss", metrics_dict["generator_total_loss"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            # Log individual loss components from the dict with consistent naming
-            self.log("train/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True, logger=True,
-                     on_step=True, on_epoch=True)
-            self.log("train/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True, logger=True,
-                     on_step=True, on_epoch=True)
-            self.log("train/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True, logger=True,
-                     on_step=True, on_epoch=True)
-            self.log("train/entropy_loss", metrics_dict["entropy_loss"], prog_bar=False, logger=True, on_step=True,
-                     on_epoch=True)
-            self.log("train/adversarial_generator_loss", metrics_dict["adversarial_generator_loss"],
-                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/g_2d_loss", metrics_dict["g_2d_loss"],
-                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/g_3d_loss", metrics_dict["g_3d_loss"],
-                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/disc_factor", metrics_dict["disc_factor"],
-                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                # (your other logs...)
 
-            self.scaler.scale(aeloss).backward()
+                self.scaler.scale(aeloss).backward()
+                self._grad_accum_step += 1
 
-            self._grad_accum_step += 1
-            if self._grad_accum_step % self.accumulate_grad_batches == 0:
-                if self.gradient_clip:
-                    # Clip gradients for encoder + decoder
-                    torch.nn.utils.clip_grad_norm_(list(self.encoder.parameters()) + list(self.decoder.parameters()),
-                                                   max_norm=1.0)
-                self.scaler.step(optimizer_g)
-                self.scaler.update()
-                optimizer_g.zero_grad(set_to_none=True)
-            self.untoggle_optimizer(optimizer_g)
+                if self._grad_accum_step % self.accumulate_grad_batches == 0:
+                    if self.gradient_clip:
+                        torch.nn.utils.clip_grad_norm_(
+                            list(self.encoder.parameters()) + list(self.decoder.parameters()), max_norm=1.0)
+                    self.scaler.step(optimizer_g)
+                    self.scaler.update()
+                    optimizer_g.zero_grad(set_to_none=True)
+                self.untoggle_optimizer(optimizer_g)
+
+            else:
+                # Just run generator forward pass without gradients (so xrec is still available)
+                with torch.no_grad(), autocast('cuda'):
+                    xrec, qloss = self(x)
+                aeloss, metrics_dict = self.loss(
+                    qloss, x, xrec, optimizer_idx=0,
+                    global_step=self.global_step,
+                    last_layer=self.get_last_layer(),
+                    skip_pass=skip_pass, split="train", freeze_generator=True)
+
+            self.log("train/generator_total_loss", metrics_dict["generator_total_loss"], ...)
 
             # ======== Train discriminator (inside self.loss) ========
-            # ======== Train discriminator ========
             self.toggle_optimizer(optimizer_d)
             with autocast('cuda'):
                 print("training disc autocast ", torch.is_autocast_enabled())
@@ -227,7 +220,11 @@ class VQGAN(pl.LightningModule):
         return entropy.item(), normalized_entropy.item()
 
     def on_train_epoch_start(self):
-        self.quantize.reset_index_usage()  # Replace with correct attribute
+        self.quantize.reset_index_usage()
+
+        if self.freeze_generator:
+            self._initial_encoder_state = {name: param.clone().detach().cpu()
+                                           for name, param in self.encoder.named_parameters()}
 
     def on_train_epoch_end(self):
         usage = self.quantize.index_usage_counts  # Tensor shape: [num_embeddings]
@@ -243,6 +240,15 @@ class VQGAN(pl.LightningModule):
         self.log("train/used_codebook_count", num_used)
         self.log("train/codebook_entropy", entropy)
         self.log("train/codebook_entropy_norm", norm_entropy)
+
+        if self.freeze_generator:
+            for name, param in self.encoder.named_parameters():
+                initial = self._initial_encoder_state[name]
+                current = param.detach().cpu()
+                if not torch.allclose(initial, current, atol=1e-6):
+                    print(f"[WARNING] Generator parameter '{name}' has changed!")
+                else:
+                    print(f"[OK] Generator parameter '{name}' is unchanged.")
 
     def validation_step(self, batch, batch_idx):
         x, cond = batch

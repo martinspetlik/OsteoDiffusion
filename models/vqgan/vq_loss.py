@@ -273,7 +273,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
     def forward(self, codebook_loss, inputs, reconstructions, optimizer_idx,
                 global_step, last_layer=None, skip_pass=0, cond=None,
-                split="train", codebook_indices=None):
+                split="train", codebook_indices=None, freeze_generator=False):
 
         # Pixel loss
         if self.use_l2:
@@ -316,6 +316,20 @@ class VQLPIPSWithDiscriminator(nn.Module):
         g_3d_loss = None
         # Generator update
         if optimizer_idx == 0:
+            if freeze_generator:
+                return None, {
+                    "generator_total_loss": torch.tensor(0.0, device=inputs.device),
+                    "codebook_loss": torch.tensor(0.0, device=inputs.device),
+                    "reconstruction_loss": torch.tensor(0.0, device=inputs.device),
+                    "perceptual_loss": torch.tensor(0.0, device=inputs.device),
+                    "entropy_loss": torch.tensor(0.0, device=inputs.device),
+                    "adversarial_generator_loss": torch.tensor(0.0, device=inputs.device),
+                    "disc_factor": torch.tensor(0.0, device=inputs.device),
+                    "codebook_weight": torch.tensor(0.0, device=inputs.device),
+                    "g_2d_loss": torch.tensor(0.0, device=inputs.device),
+                    "g_3d_loss": torch.tensor(0.0, device=inputs.device),
+                }
+
             if self.discriminator_type == "ImageNLayerDiscriminator":
                 logits_2d_fake, pred_2d_fake = self.discriminator_2d(frames_recon)
                 logits_3d_fake, pred_3d_fake = self.discriminator_3d(reconstructions)
@@ -333,6 +347,10 @@ class VQLPIPSWithDiscriminator(nn.Module):
             if torch.isnan(g_loss).any():
                 print("NaN in g_loss")
                 g_loss = torch.tensor(0.0, device=inputs.device)
+
+            print("global step", global_step)
+            print("self.discriminator_iter_start", self.discriminator_iter_start)
+            print("self.disc_ramp_duration", self.disc_ramp_duration)
 
             disc_factor = adopt_weight_ramp(self.disc_factor, global_step, threshold=self.discriminator_iter_start, ramp_duration=self.disc_ramp_duration)
             codebook_w = adopt_weight(self.codebook_weight, global_step, threshold=self.discriminator_iter_start)
@@ -372,7 +390,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
         # Discriminator update
         if optimizer_idx == 1:
-            disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
+            disc_factor = adopt_weight_ramp(self.disc_factor, global_step, threshold=self.discriminator_iter_start, ramp_duration=self.disc_ramp_duration)
             d_2d_loss, d_3d_loss = 0, 0
             if self.discriminator_type == "ImageNLayerDiscriminator":
                 logits_2d_real, _ = self.discriminator_2d(frames.detach())
@@ -383,7 +401,10 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
                 d_2d_loss = self.disc_loss(logits_2d_real, logits_2d_fake)
                 d_3d_loss = self.disc_loss(logits_3d_real, logits_3d_fake)
+                print("d_2d_loss ", d_2d_loss)
+                print("d_3d_loss ", d_3d_loss)
                 d_loss = disc_factor * (self.gan_weight_2d * d_2d_loss + self.gan_weight_3d * d_3d_loss)
+                print("d loss ", d_loss)
 
                 log = {
                     "disc_loss": d_loss.detach(),
@@ -397,6 +418,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 logits_real = self.discriminator(inputs.detach())
                 logits_fake = self.discriminator(reconstructions.detach())
                 d_loss = skip_pass * disc_factor * self.disc_loss(logits_real, logits_fake)
+                print("d loss ", d_loss)
 
                 log = {
                     "disc_loss": d_loss.detach(),
