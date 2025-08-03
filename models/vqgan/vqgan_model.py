@@ -128,6 +128,15 @@ class VQGAN(pl.LightningModule):
     def get_input(self, batch, k):
         return batch[k].float()
 
+    @staticmethod
+    def compute_grad_norm(model):
+        total_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        return total_norm ** 0.5
+
     def training_step(self, batch, batch_idx):
         with record_function("training_step"):
             x, cond = batch
@@ -146,7 +155,24 @@ class VQGAN(pl.LightningModule):
                         last_layer=self.get_last_layer(),
                         skip_pass=skip_pass, split="train")
 
-                # (your other logs...)
+                self.log("train/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True, logger=True,
+                         on_step=True, on_epoch=True)
+                self.log("train/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True,
+                         logger=True,
+                         on_step=True, on_epoch=True)
+                self.log("train/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True, logger=True,
+                         on_step=True, on_epoch=True)
+                self.log("train/entropy_loss", metrics_dict["entropy_loss"], prog_bar=False, logger=True,
+                         on_step=True,
+                         on_epoch=True)
+                self.log("train/adversarial_generator_loss", metrics_dict["adversarial_generator_loss"],
+                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                self.log("train/g_2d_loss", metrics_dict["g_2d_loss"],
+                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                self.log("train/g_3d_loss", metrics_dict["g_3d_loss"],
+                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                self.log("train/disc_factor", metrics_dict["disc_factor"],
+                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
 
                 self.scaler.scale(aeloss).backward()
                 self._grad_accum_step += 1
@@ -170,7 +196,8 @@ class VQGAN(pl.LightningModule):
                     last_layer=self.get_last_layer(),
                     skip_pass=skip_pass, split="train", freeze_generator=True)
 
-            self.log("train/generator_total_loss", metrics_dict["generator_total_loss"], ...)
+            self.log("train/generator_total_loss", metrics_dict["generator_total_loss"],
+                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
 
             # ======== Train discriminator (inside self.loss) ========
             self.toggle_optimizer(optimizer_d)
@@ -181,14 +208,28 @@ class VQGAN(pl.LightningModule):
                                                     last_layer=self.get_last_layer(),
                                                     skip_pass=skip_pass, split="train")
             self.log("train/discriminator_total_loss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/logits_2d_real", metrics_dict["logits_2d_real"], prog_bar=False, logger=True, on_step=True,on_epoch=True)
-            self.log("train/logits_2d_fake",  metrics_dict["logits_2d_fake"], prog_bar=False, logger=True, on_step=True, on_epoch=True)
-            self.log("train/logits_3d_real", metrics_dict["logits_3d_real"], prog_bar=False, logger=True, on_step=True,
+            self.log("train/logits_2d_real", metrics_dict["logits_2d_real"], prog_bar=True, logger=True, on_step=True,on_epoch=True)
+            self.log("train/logits_2d_fake",  metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("train/logits_3d_real", metrics_dict["logits_3d_real"], prog_bar=True, logger=True, on_step=True,
                      on_epoch=True)
-            self.log("train/logits_3d_fake", metrics_dict["logits_2d_fake"], prog_bar=False, logger=True, on_step=True,
+            self.log("train/logits_3d_fake", metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True,
                      on_epoch=True)
 
             self.scaler.scale(discloss).backward()
+
+            # Log discriminator gradient norm
+            if self.loss.discriminator_2d is not None and self.loss.discriminator_3d is not None:
+                grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_2d)
+                self.log("train/discriminator_grad_norm_2d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
+                         logger=True)
+
+                grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_3d)
+                self.log("train/discriminator_grad_norm_3d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
+                         logger=True)
+            else:
+                grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator)
+                self.log("train/discriminator_grad_norm", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
+                         logger=True)
 
             if self._grad_accum_step % self.accumulate_grad_batches == 0:
                 # Clip gradients for the discriminator inside self.loss
