@@ -73,6 +73,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
         config["use_checkpoint"] = trials_config["use_checkpoint"]
     if "gradient_clip" in trials_config:
         config["gradient_clip"] = trials_config["gradient_clip"]
+    if "freeze_generator" in trials_config:
+        config["freeze_generator"] = trials_config["freeze_generator"]
 
     # === Model init ===
     model_config = {}
@@ -100,6 +102,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
             model_config["use_checkpoint"] = config["use_checkpoint"]
         if "gradient_clip" in config:
             model_config["gradient_clip"] = config["gradient_clip"]
+        if "freeze_generator" in config:
+            model_config["freeze_generator"] = config["freeze_generator"]
         vqgan_model = model_class(**model_config)
         vqgan_model.learning_rate = lr
 
