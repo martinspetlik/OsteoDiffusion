@@ -312,8 +312,8 @@ class VQLPIPSWithDiscriminator(nn.Module):
         if codebook_indices is not None:
             entropy_loss = compute_entropy_loss(codebook_indices, self.num_codebook_embeddings)
 
-        g_2d_loss = None
-        g_3d_loss = None
+        g_2d_loss = 0
+        g_3d_loss = 0
         # Generator update
         if optimizer_idx == 0:
             if freeze_generator:
@@ -391,6 +391,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
         # Discriminator update
         if optimizer_idx == 1:
             disc_factor = adopt_weight_ramp(self.disc_factor, global_step, threshold=self.discriminator_iter_start, ramp_duration=self.disc_ramp_duration)
+            print("disc factor ", disc_factor)
             d_2d_loss, d_3d_loss = 0, 0
             if self.discriminator_type == "ImageNLayerDiscriminator":
                 logits_2d_real, _ = self.discriminator_2d(frames.detach())
