@@ -138,7 +138,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     callbacks = [
         ModelCheckpoint(monitor='train/generator_total_loss',
                         save_top_k=save_top_k, mode='min',
-                        filename=checkpoint_filename #'latest_checkpoint'
+                        filename=checkpoint_filename, save_last=True
                         ),
         DiscriminatorActiveCheckpoint(
             monitor='train/generator_total_loss',
@@ -189,7 +189,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     if "freeze_generator" in config and config["freeze_generator"] and model_file_path:
         vqgan_model.load_pretrained_generator_only(model_file_path)
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
-    elif model_file_path:
+    elif model_file_path is not None:
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader, ckpt_path=model_file_path)
     else:
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
