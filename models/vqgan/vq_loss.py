@@ -224,7 +224,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
                  perceptual_weight=1.0, entropy_weight=0.1, disc_conditional=False,
                  disc_num_filters=32, disc_loss="hinge", num_codebook_embeddings=256,
                  use_l2=False, perceptual_grad_scaling=1.0, LPIPS_type="aldm", discriminator_type="NLayerDiscriminator",
-                 disc_ramp_duration=0, gan_weight_2d=1.0, gan_weight_3d=1.0):
+                 disc_ramp_duration=0, gan_weight_2d=1.0, gan_weight_3d=1.0, g_loss_weight=1.0):
         super().__init__()
         self.codebook_weight = codebook_weight
         self.pixel_weight = pixelloss_weight
@@ -242,6 +242,9 @@ class VQLPIPSWithDiscriminator(nn.Module):
         self.discriminator_3d = None
         self.gan_weight_2d = gan_weight_2d
         self.gan_weight_3d = gan_weight_3d
+        self.g_loss_weight = g_loss_weight
+
+        print("self.g_loss_weight ", self.g_loss_weight)
 
         if discriminator_type == "NLayerDiscriminator":
             # Discriminator
@@ -286,7 +289,8 @@ class VQLPIPSWithDiscriminator(nn.Module):
         if self.LPIPS_type == "medical_diffusion" or self.discriminator_type == "ImageNLayerDiscriminator":
             B, C, T, H, W = inputs.shape
             # Selects one random 2D image from each 3D Image
-            frame_idx = torch.randint(0, T, [B]).cuda()
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            frame_idx = torch.randint(0, T, (B,), device=device)
             frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
             frames = torch.gather(inputs, 2, frame_idx_selected).squeeze(2)
             frames_recon = torch.gather(reconstructions, 2, frame_idx_selected).squeeze(2)
@@ -371,7 +375,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
             print("loss ", loss)
             if skip_pass != 0 and disc_factor > 0 and torch.isfinite(g_loss):
-                loss += skip_pass * disc_factor * g_loss
+                loss += skip_pass * self.g_loss_weight * disc_factor * g_loss
 
             metrics = {
                 "generator_total_loss": loss.clone().detach().mean(),
@@ -390,6 +394,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
         # Discriminator update
         if optimizer_idx == 1:
+            print("disc global step", global_step)
             disc_factor = adopt_weight_ramp(self.disc_factor, global_step, threshold=self.discriminator_iter_start, ramp_duration=self.disc_ramp_duration)
             print("disc factor ", disc_factor)
             d_2d_loss, d_3d_loss = 0, 0
