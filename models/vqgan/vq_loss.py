@@ -383,7 +383,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 "reconstruction_loss": rec_loss.detach().mean(),
                 "perceptual_loss": p_loss.detach().mean(),
                 "entropy_loss": entropy_loss.detach(),
-                "adversarial_generator_loss": g_loss.detach(),
+                "adversarial_generator_loss": self.g_loss_weight * disc_factor * g_loss.detach(),
                 "disc_factor": torch.tensor(disc_factor),
                 "codebook_weight": torch.tensor(codebook_w),
                 "g_2d_loss": g_2d_loss,
