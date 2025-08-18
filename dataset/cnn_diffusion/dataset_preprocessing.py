@@ -7,6 +7,9 @@ import torchvision.transforms as transforms
 from dataset.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
 from models.auxiliary_functions import get_mean_std, log_data, exp_data, quantile_transform_fit, QuantileTRF, NormalizeData, log_all_data, init_norm, log10_data, log10_all_data, get_loss_fn
 #from torch_geometric.data import Data, DataLoader
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Subset
+import pandas as pd
 
 
 def get_inverse_transform(study, results_dir):
@@ -190,27 +193,104 @@ def prepare_sub_datasets(study, config, data_dir, serialize_path=None):
     return complete_train_set, complete_val_set, complete_test_set
 
 
-def _split_dataset(dataset, config, n_train_samples):
+# def _split_dataset(dataset, config, n_train_samples):
+#     if n_train_samples is None:
+#         n_train_samples = int(len(dataset) * config["train_samples_ratio"])
+#
+#     n_train_samples = np.min([n_train_samples, int(len(dataset) * config["train_samples_ratio"])])
+#
+#     print("n train samples ", n_train_samples)
+#
+#     train_val_set = dataset[:n_train_samples]
+#     if config["val_samples_ratio"] == 0.0:
+#         train_set = train_val_set
+#         validation_set = []
+#     else:
+#         train_set = train_val_set[:-int(n_train_samples * config["val_samples_ratio"])]
+#         validation_set = train_val_set[-int(n_train_samples * config["val_samples_ratio"]):]
+#
+#     if "n_test_samples" in config and config["n_test_samples"] is not None:
+#         n_test_samples = config["n_test_samples"]
+#         test_set = dataset[-n_test_samples:]
+#     else:
+#         test_set = dataset[n_train_samples:]
+#
+#     return train_set, validation_set, test_set
+
+def _split_dataset(dataset, config, n_train_samples=None):
+    # Step 1: Extract metadata (sex and age)
+    metadata = []
+    for i in range(len(dataset)):
+        _, (sex, age_norm) = dataset[i]
+        age = age_norm * 100.0  # denormalize
+        metadata.append((sex, age))
+
+    #min_samples = 20
+
+    metadata = pd.DataFrame(metadata, columns=["sex", "age"])
+
+    # Step 2: Create stratification column (e.g. "F_2" = Female in age bin 2)
+    metadata["sex"] = metadata["sex"].astype(int)
+
+    # # Sort by age
+    # metadata_sorted = metadata.sort_values("age").reset_index()
+    #
+    # print("metadata_sorted ", metadata_sorted)
+    #
+    # # Assign bin IDs based on min_samples
+    # bin_ids = np.repeat(np.arange(len(metadata_sorted) // min_samples + 1), min_samples)[:len(metadata_sorted)]
+    # metadata_sorted["age_bin"] = bin_ids
+    #
+    # # Merge back to original order
+    # metadata["age_bin"] = metadata_sorted.set_index("index")["age_bin"]
+
+    #metadata["age_bin"] = pd.cut(metadata["age"], bins=[0, 30, 45, 60, 75, 100], labels=False)
+    metadata["strata"] = metadata["sex"].astype(str) #+ "_" + metadata["age_bin"].astype(str)
+
+    all_indices = np.arange(len(dataset))
+
+    # Step 3: How many samples to use?
     if n_train_samples is None:
         n_train_samples = int(len(dataset) * config["train_samples_ratio"])
 
-    n_train_samples = np.min([n_train_samples, int(len(dataset) * config["train_samples_ratio"])])
-
+    n_train_samples = min(n_train_samples, int(len(dataset) * config["train_samples_ratio"]))
     print("n train samples ", n_train_samples)
 
-    train_val_set = dataset[:n_train_samples]
-    if config["val_samples_ratio"] == 0.0:
-        train_set = train_val_set
-        validation_set = []
-    else:
-        train_set = train_val_set[:-int(n_train_samples * config["val_samples_ratio"])]
-        validation_set = train_val_set[-int(n_train_samples * config["val_samples_ratio"]):]
-
+    # Step 4: Stratified train_val/test split
     if "n_test_samples" in config and config["n_test_samples"] is not None:
-        n_test_samples = config["n_test_samples"]
-        test_set = dataset[-n_test_samples:]
+        test_size = config["n_test_samples"]
     else:
-        test_set = dataset[n_train_samples:]
+        test_size = len(dataset) - n_train_samples
+
+    # Step 4: Train/test split
+    if test_size > 0:
+        train_val_idx, test_idx = train_test_split(
+            all_indices,
+            test_size=test_size,
+            stratify=metadata["sex"],  # stratify by sex only
+            random_state=config["seed"]
+        )
+    else:
+        train_val_idx = all_indices
+        test_idx = []
+
+    # Step 5: Optional validation split
+    if config["val_samples_ratio"] == 0.0:
+        train_idx = train_val_idx
+        val_idx = []
+    else:
+        val_size = int(len(train_val_idx) * config["val_samples_ratio"])
+        train_idx, val_idx = train_test_split(
+            train_val_idx,
+            test_size=val_size,
+            stratify=metadata.loc[train_val_idx, "sex"],  # stratify by sex only
+            random_state=config["seed"]
+        )
+
+    # Step 6: Return Subsets
+    train_set = Subset(dataset, train_idx)
+    validation_set = Subset(dataset, val_idx) if len(val_idx) > 0 else []
+    test_set = Subset(dataset, test_idx) if len(test_idx) > 0 else []
 
     return train_set, validation_set, test_set
 
@@ -223,7 +303,6 @@ def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=
     dataset = BoneDatasetCT(data_dir=data_dir, data_file_name=data_file_name)
 
     print("len dataset ", len(dataset))
-
 
     n_train_samples = None
     if "n_train_samples" in config and config["n_train_samples"] is not None:

@@ -291,48 +291,55 @@ class VQGAN(pl.LightningModule):
                 else:
                     print(f"[OK] Generator parameter '{name}' is unchanged.")
 
+    @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         x, cond = batch
+        skip_pass = 1
+
         with autocast('cuda'):
-            print("validation autocast ", torch.is_autocast_enabled())
             xrec, qloss = self(x)
-            aeloss, metrics_dict = self.loss(qloss, x, xrec, 0, self.global_step,
-                                            last_layer=self.get_last_layer(), split="val")
 
-            # Rename log keys here to match the internal log dict keys
-            self.log("val/generator_total_loss", metrics_dict["generator_total_loss"], prog_bar=True, logger=False,
-                     on_step=True, on_epoch=True)
-            # Log individual loss components from the dict with consistent naming
-            self.log("val/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True, logger=True,
-                     on_step=True, on_epoch=True)
-            self.log("val/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True, logger=True,
-                     on_step=True, on_epoch=True)
-            self.log("val/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True, logger=True,
-                     on_step=True, on_epoch=True)
-            self.log("val/entropy_loss", metrics_dict["entropy_loss"], prog_bar=True, logger=True, on_step=True,
+            # Generator loss (same as training but no backward)
+            aeloss, metrics_dict = self.loss(
+                qloss, x, xrec, optimizer_idx=0,
+                global_step=self.global_step,
+                last_layer=self.get_last_layer(),
+                skip_pass=skip_pass, split="val"
+            )
+            print("Validation step is running!")  # DEBUG
+
+            self.log("val/generator_total_loss", metrics_dict["generator_total_loss"], prog_bar=True, on_step=False,
                      on_epoch=True)
-            self.log("val/adversarial_generator_loss", metrics_dict["adversarial_generator_loss"],
-                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
-
-
-            discloss, metrics_dict = self.loss(qloss, x, xrec, 1, self.global_step,
-                                                last_layer=self.get_last_layer(), split="val")
-
-            self.log("val/discriminator_total_loss", discloss, prog_bar=True, logger=True, on_step=True,
+            self.log("val/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True, on_step=False,
                      on_epoch=True)
-            self.log("val/logits_real", metrics_dict["logits_real"], prog_bar=True, logger=True, on_step=True,
+            self.log("val/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True, on_step=False,
                      on_epoch=True)
-            self.log("val/logits_fake", metrics_dict["logits_fake"], prog_bar=True, logger=True, on_step=True,
+            self.log("val/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True, on_step=False,
+                     on_epoch=True)
+            self.log("val/entropy_loss", metrics_dict["entropy_loss"], prog_bar=False, on_step=False, on_epoch=True)
+            self.log("val/g_2d_loss", metrics_dict["g_2d_loss"], prog_bar=False, on_step=False, on_epoch=True)
+            self.log("val/g_3d_loss", metrics_dict["g_3d_loss"], prog_bar=False, on_step=False, on_epoch=True)
+
+            # Optional: compute discriminator outputs on real/fake (but no training!)
+            discloss, disc_metrics = self.loss(
+                qloss, x, xrec, optimizer_idx=1,
+                global_step=self.global_step,
+                last_layer=self.get_last_layer(),
+                skip_pass=skip_pass,
+                split="val"
+            )
+
+            self.log("val/discriminator_total_loss", discloss, prog_bar=False, on_step=False, on_epoch=True)
+            self.log("val/logits_2d_real", disc_metrics["logits_2d_real"], prog_bar=False, on_step=False,
+                     on_epoch=True)
+            self.log("val/logits_2d_fake", disc_metrics["logits_2d_fake"], prog_bar=False, on_step=False,
+                     on_epoch=True)
+            self.log("val/logits_3d_real", disc_metrics["logits_3d_real"], prog_bar=False, on_step=False,
+                     on_epoch=True)
+            self.log("val/logits_3d_fake", disc_metrics["logits_3d_fake"], prog_bar=False, on_step=False,
                      on_epoch=True)
 
-        #rec_loss = log_dict_ae["val/rec_loss"]
-        # self.log("val/recon_loss", rec_loss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        # self.log("val/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        # self.log("val/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        # self.log_dict(log_dict_ae)
-        # self.log_dict(log_dict_disc)
-
-        return metrics_dict["generator_total_loss"]
+        return {"val_loss": aeloss, "val_disc_loss": discloss}
 
     def configure_optimizers(self):
         for p in self.encoder.parameters(): p.requires_grad = True
