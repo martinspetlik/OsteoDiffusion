@@ -56,6 +56,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
         train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
 
+        print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set),
+                                                                            len(test_set)))
+
         train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
         validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
@@ -133,21 +136,129 @@ def objective(trial, trials_config, train_loader, validation_loader):
     csv_logger = CSVLogger(default_root_dir, name="logger")
     loggers = [csv_logger]
 
+    checkpoints_dir = os.path.join(output_dir, "checkpoints")
+    os.makedirs(checkpoints_dir, exist_ok=True)
+
+    # Paths for checkpoints
+    train_dir = os.path.join(checkpoints_dir, "train")
+    val_dir = os.path.join(checkpoints_dir, "val")
+
+    # Create directories if they don't exist
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(val_dir, exist_ok=True)
+
     checkpoint_filename = trials_config.get("model_checkpoint_filename", 'latest_checkpoint')
 
-    callbacks = [
-        ModelCheckpoint(monitor='train/generator_total_loss',
-                        save_top_k=save_top_k, mode='min',
-                        filename=checkpoint_filename, save_last=True
-                        ),
-        DiscriminatorActiveCheckpoint(
-            monitor='train/generator_total_loss',
-            disc_start=model_config["loss_config"].get("disc_start", 0),
-            disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
-            save_top_k=save_top_k,
-            dirpath=csv_logger.log_dir
-        )
-    ]
+    train_checkpoint = ModelCheckpoint(
+        monitor="train/generator_total_loss",
+        save_top_k=save_top_k,
+        mode="min",
+        dirpath="checkpoints/train",  # <- separate folder
+        filename="latest_checkpoint"
+    )
+
+    val_checkpoint = ModelCheckpoint(
+        monitor="val/generator_total_loss",
+        save_top_k=save_top_k,
+        mode="min",
+        dirpath="checkpoints/val",  # <- separate folder
+        filename="latest_checkpoint"
+    )
+
+    # train_checkpoint = ModelCheckpoint(monitor='train/generator_total_loss',
+    #                 save_top_k=3, mode='min', filename='latest_checkpoint'),
+    #
+    # val_checkpoint = ModelCheckpoint(monitor='val/generator_total_loss',
+    #                                    save_top_k=3, mode='min', filename='latest_checkpoint'),
+
+    # # Checkpoint for best training generator loss
+    # train_checkpoint = ModelCheckpoint(
+    #     monitor="train/generator_total_loss",
+    #     save_top_k=save_top_k,  # or your save_top_k
+    #     mode="min",
+    #     filename="train-best-{epoch:02d}-{train/generator_total_loss:.4f}",
+    #     save_last=True
+    # )
+    #
+    # # Checkpoint for best validation generator loss
+    # val_checkpoint = ModelCheckpoint(
+    #     monitor="val/generator_total_loss",
+    #     save_top_k=save_top_k,  # or your save_top_k
+    #     mode="min",
+    #     dirpath="checkpoints/",
+    #     filename="val-best-{epoch:02d}-{val/generator_total_loss:.4f}",
+    #     save_last=True  # optionally keep last validation checkpoint
+    # )
+
+    # disc_checkpoint_train = DiscriminatorActiveCheckpoint(
+    #     monitor="train/generator_total_loss",
+    #     disc_start=model_config["loss_config"].get("disc_start", 0),
+    #     disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
+    #     save_top_k=save_top_k,
+    #     #dirpath=csv_logger.log_dir,
+    #     dirpath="checkpoints/",
+    #     filename="train-disc-best-{epoch:02d}-{train/generator_total_loss:.4f}",
+    #     mode="min"
+    # )
+    #
+    # disc_checkpoint_val = DiscriminatorActiveCheckpoint(
+    #     monitor="val/generator_total_loss",
+    #     disc_start=model_config["loss_config"].get("disc_start", 0),
+    #     disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
+    #     save_top_k=save_top_k,
+    #     #dirpath=csv_logger.log_dir,
+    #     dirpath="checkpoints/",
+    #     filename="val-disc-best-{epoch:02d}-{val/generator_total_loss:.4f}",
+    #     mode="min"
+    # )
+
+    callbacks = [train_checkpoint, val_checkpoint] #, disc_checkpoint_train, disc_checkpoint_val]
+
+    # trainer = pl.Trainer(
+    #     callbacks=[train_checkpoint, val_checkpoint],
+    #     # other args...
+    # )
+    #
+    # callbacks = [
+    #     # Save best model based on validation generator loss
+    #     ModelCheckpoint(
+    #         monitor='val/generator_total_loss',
+    #         save_top_k=save_top_k,
+    #         mode='min',
+    #         filename='val-best-{epoch:02d}-{val/generator_total_loss:.4f}',
+    #         save_last=True
+    #     ),
+    #
+    #     # Save best model based on training generator loss (for debugging)
+    #     ModelCheckpoint(
+    #         monitor='train/generator_total_loss',
+    #         save_top_k=save_top_k,
+    #         mode='min',
+    #         filename='train-best-{epoch:02d}-{train/generator_total_loss:.4f}',
+    #     ),
+    #
+    #     # Discriminator checkpoint based on validation generator loss
+    # DiscriminatorActiveCheckpoint(
+    #     monitor='val/generator_total_loss',
+    #     disc_start=model_config["loss_config"].get("disc_start", 0),
+    #     disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
+    #     save_top_k=save_top_k,
+    #     dirpath=csv_logger.log_dir,
+    #     filename='val-disc-best-{epoch:02d}-{val/generator_total_loss:.4f}',
+    #     mode='min'
+    # ),
+    #
+    #     # Discriminator checkpoint based on training generator loss (for debugging)
+    #     DiscriminatorActiveCheckpoint(
+    #         monitor='train/generator_total_loss',
+    #         disc_start=model_config["loss_config"].get("disc_start", 0),
+    #         disc_ramp_duration=model_config["loss_config"].get("disc_ramp_duration", 0),
+    #         save_top_k=1,
+    #         dirpath=csv_logger.log_dir,
+    #         filename='train-disc-best-{epoch:02d}-{train/generator_total_loss:.4f}',
+    #         mode='min'
+    #     )
+    # ]
 
     accelerator = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -296,8 +407,8 @@ if __name__ == '__main__':
     # ================================
     train_loader, validation_loader = None, None
     if "n_train_samples" not in config or not isinstance(config["n_train_samples"], (list, np.ndarray)):
-        dataset = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
-        data_loader = DataLoader(dataset, batch_size=config["batch_size_train"], shuffle=True)
+        dset = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
+        data_loader = DataLoader(dset, batch_size=config["batch_size_train"], shuffle=True)
 
     def obj_func(trial):
         return objective(trial, trials_config, train_loader, validation_loader)
