@@ -305,7 +305,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     else:
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
 
-    loss = trainer.callback_metrics["train/generator_total_loss"].item()
+    loss = trainer.callback_metrics["val/generator_total_loss"].item()
     #mlf.log_metric("train_generator_total_loss", loss)
     #mlf.log_metric("training_duration_sec", training_duration)
 
