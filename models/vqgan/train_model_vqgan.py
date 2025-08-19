@@ -136,7 +136,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     csv_logger = CSVLogger(default_root_dir, name="logger")
     loggers = [csv_logger]
 
-    checkpoints_dir = os.path.join(output_dir, "checkpoints")
+    checkpoints_dir = os.path.join(csv_logger.log_dir, "checkpoints")
     os.makedirs(checkpoints_dir, exist_ok=True)
 
     # Paths for checkpoints
@@ -153,16 +153,16 @@ def objective(trial, trials_config, train_loader, validation_loader):
         monitor="train/generator_total_loss",
         save_top_k=save_top_k,
         mode="min",
-        dirpath="checkpoints/train",  # <- separate folder
-        filename="latest_checkpoint"
+        dirpath=train_dir, save_last=True,
+        filename="train-best-{epoch:02d}-{train_generator_total_loss:.4f}"
     )
 
     val_checkpoint = ModelCheckpoint(
         monitor="val/generator_total_loss",
         save_top_k=save_top_k,
         mode="min",
-        dirpath="checkpoints/val",  # <- separate folder
-        filename="latest_checkpoint"
+        dirpath=val_dir, save_last=True,
+        filename="val-best-{epoch:02d}-{val_generator_total_loss:.4f}"
     )
 
     # train_checkpoint = ModelCheckpoint(monitor='train/generator_total_loss',
