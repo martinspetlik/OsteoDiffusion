@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.utils as nn_utils
 
 from models.vqgan.LPIPS_aldm import LPIPSALDM
 from models.vqgan.LPIPS_medical_diffusion import LPIPSMedicalDiffusion
@@ -162,14 +163,22 @@ class NLayerDiscriminator(nn.Module):
     """
     Defines a 3D PatchGAN discriminator, adapted from Pix2Pix/CycleGAN.
     Uses InstanceNorm3d for stability with batch size 1.
+    Now supports spectral normalization and dropout.
     """
 
-    def __init__(self, input_num_channels=1, num_base_filters=32, n_layers=3):
+    def __init__(self,
+                 input_num_channels=1,
+                 num_base_filters=32,
+                 n_layers=3,
+                 use_spectral_norm=True,
+                 dropout_prob=0.0):
         """
         Parameters:
-            input_nc (int)  -- number of input channels
-            ndf (int)       -- base number of filters
-            n_layers (int)  -- number of conv layers
+            input_num_channels (int) -- number of input channels
+            num_base_filters (int)   -- base number of filters
+            n_layers (int)           -- number of conv layers
+            use_spectral_norm (bool) -- whether to apply spectral normalization
+            dropout_prob (float)     -- dropout probability (0 disables dropout)
         """
         super(NLayerDiscriminator, self).__init__()
 
@@ -178,10 +187,20 @@ class NLayerDiscriminator(nn.Module):
         norm_layer = nn.InstanceNorm3d
         use_bias = True
 
+        def spectral_conv(conv_layer):
+            """Apply spectral norm if enabled."""
+            return nn_utils.spectral_norm(conv_layer) if use_spectral_norm else conv_layer
+
         sequence = [
-            nn.Conv3d(input_num_channels, num_base_filters, kernel_size=kw, stride=2, padding=padw),
+            spectral_conv(
+                nn.Conv3d(input_num_channels, num_base_filters,
+                          kernel_size=kw, stride=2, padding=padw, bias=use_bias)
+            ),
             nn.LeakyReLU(0.2, inplace=True)
         ]
+
+        if dropout_prob > 0:
+            sequence.append(nn.Dropout3d(p=dropout_prob))
 
         nf_mult = 1
         nf_mult_prev = 1
@@ -191,25 +210,35 @@ class NLayerDiscriminator(nn.Module):
             nf_mult_prev = nf_mult
             nf_mult = min(2 ** n, 8)
             sequence += [
-                nn.Conv3d(num_base_filters * nf_mult_prev, num_base_filters * nf_mult,
-                          kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                spectral_conv(
+                    nn.Conv3d(num_base_filters * nf_mult_prev, num_base_filters * nf_mult,
+                              kernel_size=kw, stride=2, padding=padw, bias=use_bias)
+                ),
                 norm_layer(num_base_filters * nf_mult, affine=True),
                 nn.LeakyReLU(0.2, inplace=True)
             ]
+            if dropout_prob > 0:
+                sequence.append(nn.Dropout3d(p=dropout_prob))
 
         # Final conv blocks
         nf_mult_prev = nf_mult
         nf_mult = min(2 ** n_layers, 8)
         sequence += [
-            nn.Conv3d(num_base_filters * nf_mult_prev, num_base_filters * nf_mult,
-                      kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+            spectral_conv(
+                nn.Conv3d(num_base_filters * nf_mult_prev, num_base_filters * nf_mult,
+                          kernel_size=kw, stride=1, padding=padw, bias=use_bias)
+            ),
             norm_layer(num_base_filters * nf_mult, affine=True),
             nn.LeakyReLU(0.2, inplace=True)
         ]
+        if dropout_prob > 0:
+            sequence.append(nn.Dropout3d(p=dropout_prob))
 
         # Output layer
         sequence += [
-            nn.Conv3d(num_base_filters * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+            spectral_conv(
+                nn.Conv3d(num_base_filters * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+            )
         ]
 
         self.main = nn.Sequential(*sequence)
@@ -224,7 +253,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
                  perceptual_weight=1.0, entropy_weight=0.1, disc_conditional=False,
                  disc_num_filters=32, disc_loss="hinge", num_codebook_embeddings=256,
                  use_l2=False, perceptual_grad_scaling=1.0, LPIPS_type="aldm", discriminator_type="NLayerDiscriminator",
-                 disc_ramp_duration=0, gan_weight_2d=1.0, gan_weight_3d=1.0, g_loss_weight=1.0):
+                 disc_ramp_duration=0, gan_weight_2d=1.0, gan_weight_3d=1.0, g_loss_weight=1.0, disc_use_spectral_norm=False, disc_dropout_prob=0.0):
         super().__init__()
         self.codebook_weight = codebook_weight
         self.pixel_weight = pixelloss_weight
@@ -250,7 +279,11 @@ class VQLPIPSWithDiscriminator(nn.Module):
             # Discriminator
             self.discriminator = NLayerDiscriminator(input_num_channels=disc_in_channels,
                                                      n_layers=disc_num_layers,
-                                                     num_base_filters=disc_num_filters).apply(weights_init)
+                                                     num_base_filters=disc_num_filters,
+                                                     use_spectral_norm=disc_use_spectral_norm,
+                                                     dropout_prob=disc_dropout_prob
+                                                     ).apply(weights_init)
+
         elif discriminator_type == "ImageNLayerDiscriminator":
             self.discriminator_2d = NLayerDiscriminator2D(input_num_channels=disc_in_channels,
                                                        n_layers=disc_num_layers,
