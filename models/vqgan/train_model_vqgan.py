@@ -301,7 +301,17 @@ def objective(trial, trials_config, train_loader, validation_loader):
         vqgan_model.load_pretrained_generator_only(model_file_path)
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
     elif model_file_path is not None:
-        trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader, ckpt_path=model_file_path)
+        if "clear_discriminator" in trials_config and trials_config["clear_discriminator"]:
+            checkpoint = torch.load(model_file_path, map_location="cpu")
+            state_dict = checkpoint["state_dict"]
+            # Filter out all discriminator weights
+            filtered_state_dict = {k: v for k, v in state_dict.items() if "discriminator" not in k}
+            # Load only generator weights
+            missing, unexpected = vqgan_model.load_state_dict(filtered_state_dict, strict=False)
+            trainer.fit(vqgan_model, train_loader, validation_loader)
+        else:
+            trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader, ckpt_path=model_file_path)
+
     else:
         trainer.fit(vqgan_model, train_dataloaders=train_loader, val_dataloaders=validation_loader)
 
