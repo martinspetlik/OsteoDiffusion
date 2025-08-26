@@ -176,6 +176,11 @@ def objective(trial, trials_config, train_loader, validation_loader):
     callbacks = [train_checkpoint, val_checkpoint]
 
     if "callbacks" in trials_config:
+        if "Checkpoints_every_5" in trials_config["callbacks"]:
+            checkpoints_every_5_dir = os.path.join(checkpoints_dir, "checkpoints_every5")
+            os.makedirs(checkpoints_every_5_dir, exist_ok=True)
+            checkpoint_callback = ModelCheckpoint(save_top_k=-1, every_n_epochs=5, dirpath=checkpoints_every_5_dir, filename="epoch{epoch}")
+            callbacks.append(checkpoint_callback)
         if "LPIPS_alex_metric" in trials_config["callbacks"]:
             LPIPS_alex_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='alex', top_n=save_top_k, dirpath=os.path.join(checkpoints_dir, "LPIPS_alex_metric"))
             callbacks.append(LPIPS_alex_callback)
