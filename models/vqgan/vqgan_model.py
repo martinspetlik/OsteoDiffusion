@@ -44,7 +44,8 @@ class VQGAN(pl.LightningModule):
                  generator_learning_rate=1e-5,
                  discriminator_learning_rate=2e-4,
                  gradient_clip=False,
-                 freeze_generator=False):
+                 freeze_generator=False,
+                 disc_update_interval=1):
         super().__init__()
         self._name = "VQGAN"
         #self.image_key = image_key
@@ -56,6 +57,7 @@ class VQGAN(pl.LightningModule):
         self.discriminator_learning_rate = discriminator_learning_rate
         self.gradient_clip = gradient_clip
         self.freeze_generator = freeze_generator
+        self.disc_update_interval = disc_update_interval
 
         self.encoder = Encoder(**ed_config)
         self.decoder = Decoder(**ed_config)
@@ -185,7 +187,6 @@ class VQGAN(pl.LightningModule):
                     self.scaler.update()
                     optimizer_g.zero_grad(set_to_none=True)
                 self.untoggle_optimizer(optimizer_g)
-
             else:
                 # Just run generator forward pass without gradients (so xrec is still available)
                 with torch.no_grad(), autocast('cuda'):
@@ -200,48 +201,50 @@ class VQGAN(pl.LightningModule):
                      prog_bar=True, logger=True, on_step=True, on_epoch=True)
 
             # ======== Train discriminator (inside self.loss) ========
-            self.toggle_optimizer(optimizer_d)
-            with autocast('cuda'):
-                print("training disc autocast ", torch.is_autocast_enabled())
-                discloss, metrics_dict = self.loss(qloss, x, xrec, optimizer_idx=1,
-                                                    global_step=self.global_step,
-                                                    last_layer=self.get_last_layer(),
-                                                    skip_pass=skip_pass, split="train")
-            self.log("train/discriminator_total_loss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/logits_2d_real", metrics_dict["logits_2d_real"], prog_bar=True, logger=True, on_step=True,on_epoch=True)
-            self.log("train/logits_2d_fake",  metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log("train/logits_3d_real", metrics_dict["logits_3d_real"], prog_bar=True, logger=True, on_step=True,
-                     on_epoch=True)
-            self.log("train/logits_3d_fake", metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True,
-                     on_epoch=True)
+            discloss = torch.tensor(0.0, device=self.device)
+            if (self.global_step % self.disc_update_interval) == 0:
+                self.toggle_optimizer(optimizer_d)
+                with autocast('cuda'):
+                    print("training disc autocast ", torch.is_autocast_enabled())
+                    discloss, metrics_dict = self.loss(qloss, x, xrec, optimizer_idx=1,
+                                                        global_step=self.global_step,
+                                                        last_layer=self.get_last_layer(),
+                                                        skip_pass=skip_pass, split="train")
+                self.log("train/discriminator_total_loss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                self.log("train/logits_2d_real", metrics_dict["logits_2d_real"], prog_bar=True, logger=True, on_step=True,on_epoch=True)
+                self.log("train/logits_2d_fake",  metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                self.log("train/logits_3d_real", metrics_dict["logits_3d_real"], prog_bar=True, logger=True, on_step=True,
+                         on_epoch=True)
+                self.log("train/logits_3d_fake", metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True,
+                         on_epoch=True)
 
-            self.scaler.scale(discloss).backward()
+                self.scaler.scale(discloss).backward()
 
-            # Log discriminator gradient norm
-            if self.loss.discriminator_2d is not None and self.loss.discriminator_3d is not None:
-                grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_2d)
-                self.log("train/discriminator_grad_norm_2d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
-                         logger=True)
+                # Log discriminator gradient norm
+                if self.loss.discriminator_2d is not None and self.loss.discriminator_3d is not None:
+                    grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_2d)
+                    self.log("train/discriminator_grad_norm_2d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
+                             logger=True)
 
-                grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_3d)
-                self.log("train/discriminator_grad_norm_3d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
-                         logger=True)
-            else:
-                grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator)
-                self.log("train/discriminator_grad_norm", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
-                         logger=True)
+                    grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_3d)
+                    self.log("train/discriminator_grad_norm_3d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
+                             logger=True)
+                else:
+                    grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator)
+                    self.log("train/discriminator_grad_norm", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
+                             logger=True)
 
-            if self._grad_accum_step % self.accumulate_grad_batches == 0:
-                # Clip gradients for the discriminator inside self.loss
-                if self.gradient_clip:
-                    if hasattr(self.loss, "discriminator"):
-                        torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(), max_norm=1.0)
-                    else:
-                        print("No discriminator found in self.loss. Skipping gradient clipping.")
-                self.scaler.step(optimizer_d)
-                self.scaler.update()
-                optimizer_d.zero_grad(set_to_none=True)
-            self.untoggle_optimizer(optimizer_d)
+                if self._grad_accum_step % self.accumulate_grad_batches == 0:
+                    # Clip gradients for the discriminator inside self.loss
+                    if self.gradient_clip:
+                        if hasattr(self.loss, "discriminator"):
+                            torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(), max_norm=1.0)
+                        else:
+                            print("No discriminator found in self.loss. Skipping gradient clipping.")
+                    self.scaler.step(optimizer_d)
+                    self.scaler.update()
+                    optimizer_d.zero_grad(set_to_none=True)
+                self.untoggle_optimizer(optimizer_d)
 
             return {"gen_loss": aeloss, "d_loss": discloss}
 
