@@ -32,6 +32,10 @@ from torch.profiler import ProfilerActivity, schedule, tensorboard_trace_handler
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from models.vqgan.discriminator_active_callback import DiscriminatorActiveCheckpoint
+from models.vqgan.LPIPS_callback import LPIPSTopNModels3D
+from models.vqgan.MSSSIM_callback import MSSSIMTopNModels3D
+from models.vqgan.FID_callback import FIDTopNModels3D
+from models.vqgan.multimetric_callback import MultiMetricTopNModels3D
 from models.mlflow_wrapper import MLflowWrapper
 
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -165,6 +169,14 @@ def objective(trial, trials_config, train_loader, validation_loader):
         filename="val-best-{epoch:02d}-{val_generator_total_loss:.4f}"
     )
 
+    # val_loader should yield batches of 3D volumes: [batch, C, D, H, W]
+    LPIPS_alex_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='alex', top_n=save_top_k, dirpath="LPIPS_alex_metric")
+    LPIPS_vgg_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='vgg', top_n=save_top_k, dirpath="LPIPS_vgg_metric")
+    MSSSIM_callback = MSSSIMTopNModels3D(val_loader=validation_loader, top_n=save_top_k, dirpath="MSSSIM_metric")
+    FID_callback = FIDTopNModels3D(val_loader=validation_loader, top_n=save_top_k, dirpath="FID_metric")
+
+    multimetric_callback = MultiMetricTopNModels3D(val_loader=validation_loader, top_n=3, dirpath="multimetric")
+
     # train_checkpoint = ModelCheckpoint(monitor='train/generator_total_loss',
     #                 save_top_k=3, mode='min', filename='latest_checkpoint'),
     #
@@ -212,7 +224,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     #     mode="min"
     # )
 
-    callbacks = [train_checkpoint, val_checkpoint] #, disc_checkpoint_train, disc_checkpoint_val]
+    callbacks = [train_checkpoint, val_checkpoint, LPIPS_alex_callback, LPIPS_vgg_callback, FID_callback, MSSSIM_callback] #, disc_checkpoint_train, disc_checkpoint_val]
 
     # trainer = pl.Trainer(
     #     callbacks=[train_checkpoint, val_checkpoint],
