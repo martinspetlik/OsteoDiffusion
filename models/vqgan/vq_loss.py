@@ -417,7 +417,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
             metrics = {
                 "generator_total_loss": loss.clone().detach().mean(),
-                "codebook_loss": codebook_loss.detach().mean(),
+                "codebook_loss": codebook_w * codebook_loss.detach().mean(),
                 "reconstruction_loss": rec_loss.detach().mean(),
                 "perceptual_loss": p_loss.detach().mean(),
                 "entropy_loss": entropy_loss.detach(),
