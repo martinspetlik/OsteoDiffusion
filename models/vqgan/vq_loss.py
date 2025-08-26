@@ -173,7 +173,7 @@ class NLayerDiscriminator(nn.Module):
                  num_base_filters=32,
                  n_layers=3,
                  norm_type="none",            # "none", "instance", "group"
-                 spectral_norm="all",         # "none", "all", "last"
+                 spectral_norm="all",         # "none", "all", "all_but_first",  "last"
                  dropout_prob=0.0):
         super(NLayerDiscriminator, self).__init__()
 
@@ -191,6 +191,8 @@ class NLayerDiscriminator(nn.Module):
 
         def maybe_spectral(conv_layer, layer_idx, total_layers):
             if spectral_norm == "all":
+                return nn_utils.spectral_norm(conv_layer)
+            elif spectral_norm == "all_but_first" and layer_idx != 0:
                 return nn_utils.spectral_norm(conv_layer)
             elif spectral_norm == "last" and layer_idx == total_layers - 1:
                 return nn_utils.spectral_norm(conv_layer)

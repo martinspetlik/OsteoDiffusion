@@ -82,6 +82,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
         config["gradient_clip"] = trials_config["gradient_clip"]
     if "freeze_generator" in trials_config:
         config["freeze_generator"] = trials_config["freeze_generator"]
+    if "disc_update_interval" in trials_config:
+        config["disc_update_interval"] = trials_config["disc_update_interval"]
 
     # === Model init ===
     model_config = {}
@@ -111,6 +113,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
             model_config["gradient_clip"] = config["gradient_clip"]
         if "freeze_generator" in config:
             model_config["freeze_generator"] = config["freeze_generator"]
+        if "disc_update_interval" in config:
+            model_config["disc_update_interval"] = config["disc_update_interval"]
         vqgan_model = model_class(**model_config)
         vqgan_model.learning_rate = lr
 
