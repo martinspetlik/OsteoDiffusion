@@ -170,12 +170,12 @@ def objective(trial, trials_config, train_loader, validation_loader):
     )
 
     # val_loader should yield batches of 3D volumes: [batch, C, D, H, W]
-    LPIPS_alex_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='alex', top_n=save_top_k, dirpath="LPIPS_alex_metric")
-    LPIPS_vgg_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='vgg', top_n=save_top_k, dirpath="LPIPS_vgg_metric")
-    MSSSIM_callback = MSSSIMTopNModels3D(val_loader=validation_loader, top_n=save_top_k, dirpath="MSSSIM_metric")
-    FID_callback = FIDTopNModels3D(val_loader=validation_loader, top_n=save_top_k, dirpath="FID_metric")
+    LPIPS_alex_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='alex', top_n=save_top_k, dirpath=os.path.join(checkpoints_dir,"LPIPS_alex_metric"))
+    LPIPS_vgg_callback = LPIPSTopNModels3D(val_loader=validation_loader, net='vgg', top_n=save_top_k, dirpath=os.path.join(checkpoints_dir,"LPIPS_vgg_metric"))
+    MSSSIM_callback = MSSSIMTopNModels3D(val_loader=validation_loader, top_n=save_top_k, dirpath=os.path.join(checkpoints_dir,"MSSSIM_metric"))
+    FID_callback = FIDTopNModels3D(val_loader=validation_loader, top_n=save_top_k, dirpath=os.path.join(checkpoints_dir,"FID_metric"))
 
-    multimetric_callback = MultiMetricTopNModels3D(val_loader=validation_loader, top_n=3, dirpath="multimetric")
+    multimetric_callback = MultiMetricTopNModels3D(val_loader=validation_loader, top_n=3, dirpath=os.path.join(checkpoints_dir,"multimetric"))
 
     # train_checkpoint = ModelCheckpoint(monitor='train/generator_total_loss',
     #                 save_top_k=3, mode='min', filename='latest_checkpoint'),
@@ -224,7 +224,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     #     mode="min"
     # )
 
-    callbacks = [train_checkpoint, val_checkpoint, LPIPS_alex_callback, LPIPS_vgg_callback, FID_callback, MSSSIM_callback] #, disc_checkpoint_train, disc_checkpoint_val]
+    callbacks = [train_checkpoint, val_checkpoint, LPIPS_alex_callback, LPIPS_vgg_callback, FID_callback, MSSSIM_callback, multimetric_callback] #, disc_checkpoint_train, disc_checkpoint_val]
 
     # trainer = pl.Trainer(
     #     callbacks=[train_checkpoint, val_checkpoint],
