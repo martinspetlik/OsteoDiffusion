@@ -239,10 +239,12 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ## Load VQGAN ##
     ################
     vqgan_study = joblib.load(os.path.join(trials_config["vqgan_results_dir"], "study.pkl"))
-    vqgan_model_path = os.path.join(trials_config["vqgan_results_dir"], "logger/version_0/checkpoints/val/last.ckpt")
+    if "vqgan_model_path" in trials_config:
+        vqgan_model_path = trials_config["vqgan_model_path"]
+    else:
+        vqgan_model_path = os.path.join(trials_config["vqgan_results_dir"], "logger/version_0/checkpoints/val/last.ckpt")
 
-    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path,
-                                                        **vqgan_study.best_trial.params["model_config"])
+    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path, **vqgan_study.best_trial.params["model_config"])
 
     vqgan_model_checkpoint.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
