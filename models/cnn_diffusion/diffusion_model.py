@@ -10,10 +10,12 @@ from models.auxiliary_functions import extract
 class DiffusionModel(nn.Module):
     def __init__(self,
                  cnn_model,
+                 image_size,
                  noise_scheduler):
         super(DiffusionModel, self).__init__()
         self._name = "DiffusionModel"
 
+        self.image_size = image_size
         self.model = cnn_model
         self.noise_scheduler = noise_scheduler
 
@@ -40,7 +42,7 @@ class DiffusionModel(nn.Module):
         :param data: data
         :return:
         """
-        #print("data.shape ", data.shape)
+        print("diffusion model forward - data.shape ", data.shape)
         #data = data.float()
         batch_size = data.shape[0]
 
@@ -63,7 +65,6 @@ class DiffusionModel(nn.Module):
         #print("timestamp ", timestamp)
 
         # print("x ", x)
-
         #######
         ## p_losses
         ######
@@ -75,11 +76,10 @@ class DiffusionModel(nn.Module):
 
         # print(
         #     "timestamp: {}, samples mean: {}, std: {}".format(timestamp, torch.mean(x_noised.cpu().flatten()), torch.std(x_noised.cpu().flatten())))
+        # data = x_noised
 
-        #data = x_noised
-
-        # print("x noised ", x_noised)
-        # print("timestamp ", timestamp)
+        #print("x noised ", x_noised)
+        print("timestamp ", timestamp)
         # print("mean noise ", torch.mean(noise))
         # print("data type ", type(data))
         # print("data ", data.shape)
@@ -137,7 +137,6 @@ class DiffusionModel(nn.Module):
         # axes.hist(data.cpu().flatten(), bins=100, density=True, label="Sampled bone density distr")
         # fig.legend()
         # plt.show()
-
 
         print("batched_timestamps ", batched_timestamps)
 
@@ -211,7 +210,7 @@ class DiffusionModel(nn.Module):
     def sample(self, batch_size, inverse_transform=None,  dataset=None, return_all_timesteps=None):
         #print("self.model.adj_matrix.shape ", self.model.adj_matrix.shape)
 
-        shape = (batch_size, 1, self.model.dim,  self.model.dim,  self.model.dim)
+        shape = (batch_size, *self.image_size)
 
         samples = torch.randn(shape)#, device=self.model.adj_matrix.device)
 
