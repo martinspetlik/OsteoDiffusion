@@ -223,6 +223,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     if "train_on_codebooks" in trials_config:
         config["train_on_codebooks"] = trials_config["train_on_codebooks"]
 
+
     #####################
     #####################
     #  Initilize model #
@@ -278,7 +279,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     #######################
     ### Diffusion model ###
     #######################
-    diff_model = DiffusionModel(unet_diffusion_model, noise_scheduler).to(device)
+    diff_model = DiffusionModel(unet_diffusion_model, trials_config["image_size"], noise_scheduler).to(device)
 
     #########################
     #########################
@@ -298,9 +299,8 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
     trial.set_user_attr("diff_model_class", diff_model.__class__)
     trial.set_user_attr("diff_model_name", diff_model._name)
-    #trial.set_user_attr("cnn_model_name", cnn_model._name)
+    trial.set_user_attr("unet_diffusion_model_name", unet_diffusion_model._name)
     trial.set_user_attr("cnn_config", cnn_config)
-    #trial.set_user_attr("gnn_model_kwargs", gnn_kwargs)
     trial.set_user_attr("noise_scheduler_kwargs", noise_scheduler_kwargs)
     trial.set_user_attr("optimizer_class", optimizer.__class__)
     trial.set_user_attr("optimizer_kwargs", optimizer_kwargs)
@@ -476,8 +476,8 @@ if __name__ == '__main__':
     torch.manual_seed(random_seed)
     output_dir = os.path.join(output_dir, "seed_{}".format(random_seed))
     if os.path.exists(output_dir) and not args.append:
-        shutil.rmtree(output_dir)
-        #raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
+        #shutil.rmtree(output_dir)
+        raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
     if not args.append:
         os.mkdir(output_dir)
     elif not os.path.exists(output_dir):

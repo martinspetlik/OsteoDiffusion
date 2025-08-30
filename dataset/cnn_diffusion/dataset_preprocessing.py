@@ -267,11 +267,12 @@ def _split_dataset(dataset, config, n_train_samples=None):
         train_val_idx, test_idx = train_test_split(
             all_indices,
             test_size=test_size,
+            train_size=n_train_samples,
             stratify=metadata["sex"],  # stratify by sex only
             random_state=config["seed"]
         )
     else:
-        train_val_idx = all_indices
+        train_val_idx = all_indices[:n_train_samples]
         test_idx = []
 
     # Step 5: Optional validation split
@@ -301,8 +302,6 @@ def prepare_dataset(study, config, data_dir, serialize_path=None, train_dataset=
         data_file_name = config["data_file_name"]
 
     dataset = BoneDatasetCT(data_dir=data_dir, data_file_name=data_file_name)
-
-    print("len dataset ", len(dataset))
 
     n_train_samples = None
     if "n_train_samples" in config and config["n_train_samples"] is not None:

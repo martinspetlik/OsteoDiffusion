@@ -166,12 +166,21 @@ class SinusoidalPosEmb(nn.Module):
         return emb
 
 
+# def Upsample(dim):
+#     return nn.ConvTranspose3d(dim, dim, (1, 4, 4), (1, 2, 2), (0, 1, 1))
+#
+#
+# def Downsample(dim):
+#     return nn.Conv3d(dim, dim, (1, 4, 4), (1, 2, 2), (0, 1, 1))
+
 def Upsample(dim):
-    return nn.ConvTranspose3d(dim, dim, (1, 4, 4), (1, 2, 2), (0, 1, 1))
+    return nn.ConvTranspose3d(dim, dim, (2, 4, 4), (2, 2, 2), (0, 1, 1))
 
 
 def Downsample(dim):
-    return nn.Conv3d(dim, dim, (1, 4, 4), (1, 2, 2), (0, 1, 1))
+    return nn.Conv3d(dim, dim, (2, 4, 4), (2, 2, 2), (0, 1, 1))
+
+
 
 
 class LayerNorm(nn.Module):
@@ -231,16 +240,19 @@ class ResnetBlock(nn.Module):
             dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
     def forward(self, x, time_emb=None):
-
+        # print("time emb ", time_emb)
+        # print("exists(self.mlp) ", exists(self.mlp))
         scale_shift = None
         if exists(self.mlp):
             assert exists(time_emb), 'time emb must be passed in'
             time_emb = self.mlp(time_emb)
             time_emb = rearrange(time_emb, 'b c -> b c 1 1 1')
+
             scale_shift = time_emb.chunk(2, dim=1)
+            # print("scale shift ", scale_shift)
+            # exit()
 
         h = self.block1(x, scale_shift=scale_shift)
-
         h = self.block2(h)
         return h + self.res_conv(x)
 
@@ -398,6 +410,7 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
         use_temporal_attention=True
     ):
         super().__init__()
+        self._name = "MedicalDiffusionUNet3DOwn"
         self.channels = channels
         self.dim = dim
         # temporal attention and its relative positional encoding
@@ -432,10 +445,12 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
             PreNorm(init_dim, temporal_attn(init_dim)))
 
         # dimensions
-        dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
+        dims = [init_dim, *map(lambda m: int(dim * m), dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
         print("dims ", dims)
+        print("in_out ", in_out)
+
         # time conditioning
 
         time_dim = dim * 4
@@ -539,8 +554,12 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
         t = self.time_mlp(time) if exists(self.time_mlp) else None
         h = []
 
+        # print("x.shape ", x.shape)
+        # print("t.shape ", t.shape)
+
         for block1, block2, spatial_attn, temporal_attn, downsample in self.downs:
             x = block1(x, t)
+            #print("x.shape ", x.shape)
             x = block2(x, t)
             x = spatial_attn(x)
             if self._use_temporal_attention:
@@ -548,6 +567,7 @@ class MedicalDiffusionUNet3DOwn(nn.Module):
                                   focus_present_mask=focus_present_mask)
             h.append(x)
             x = downsample(x)
+            #print("x downsamples ", x.shape)
 
         x = self.mid_block1(x, t)
         x = self.mid_spatial_attn(x)
