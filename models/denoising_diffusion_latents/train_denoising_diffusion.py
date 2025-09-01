@@ -244,7 +244,13 @@ def objective(trial, trials_config, train_loader, validation_loader):
     else:
         vqgan_model_path = os.path.join(trials_config["vqgan_results_dir"], "logger/version_0/checkpoints/val/last.ckpt")
 
-    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path, **vqgan_study.best_trial.params["model_config"])
+    if "vqgan_trials_config" in trials_config:
+        vqgan_model_config = load_trials_config(trials_config["vqgan_trials_config"])["model_config"][0]
+        print("vqgan model config ", vqgan_model_config)
+    else:
+        vqgan_model_config = vqgan_study.best_trial.params["model_config"]
+
+    vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path, **vqgan_model_config)
 
     vqgan_model_checkpoint.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
