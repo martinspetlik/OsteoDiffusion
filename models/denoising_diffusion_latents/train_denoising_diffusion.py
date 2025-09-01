@@ -19,7 +19,7 @@ from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
 from dataset.denoising_diffusion_latents.latents_dataset import LatentsDataset
 from torch.utils.data import DataLoader
 from models.vqgan.vqgan_model import VQGAN
-from models.cnn_diffusion.diffusion_model import DiffusionModel, ConditionalDiffusion
+from models.cnn_diffusion.diffusion_model import DiffusionModel#, ConditionalDiffusion
 from models.schedulers import NoiseScheduler
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
 from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
