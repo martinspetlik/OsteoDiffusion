@@ -10,14 +10,16 @@ from optuna.samplers import TPESampler, BruteForceSampler
 import time
 import yaml
 import shutil
+from tqdm import tqdm
 import numpy as np
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from models.auxiliary_functions import get_loss_fn
 from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
+from dataset.denoising_diffusion_latents.latents_dataset import LatentsDataset
 from torch.utils.data import DataLoader
 from models.vqgan.vqgan_model import VQGAN
-from models.cnn_diffusion.diffusion_model import DiffusionModel
+from models.cnn_diffusion.diffusion_model import DiffusionModel, ConditionalDiffusion
 from models.schedulers import NoiseScheduler
 from models.cnn_diffusion.medicaldiffusion_unet3D import MedicalDiffusionUNet3D
 from models.cnn_diffusion.medicaldiffusion_unet3D_own import MedicalDiffusionUNet3DOwn
@@ -60,35 +62,35 @@ def validate(model, vqgan, validation_loader, config, loss_fn=nn.CrossEntropyLos
             # if torch.cuda.is_available() and use_cuda:
             #     samples = samples.cuda()
             volumes, cond = samples
-            input = volumes.to(device)
+            model_input = volumes.to(device)
 
-            if "train_on_codebooks" in config and config["train_on_codebooks"]:
-                ####
-                # ALDM approach
-                ####
-                h = vqgan.encoder(input)
-                h = vqgan.quant_conv(h)
-                vqgan.quantize.sane_index_shape = True  # get in spatial format
-                z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
-                # In ALDM implementation - diffusion model is trained on !!z_q!! - quantized representations scaled by its std
-                ## z_q / z_q.flatten().std()
-                model_input = z_q / z_q.flatten().std()
-                #######
-                #######
-            else:
-                ####
-                # MedicalDiffusion approach
-                ####
-                h = vqgan.encoder(input)
-                h = vqgan.quant_conv(h)
-                print("vqgan.quantize.embedding ", vqgan.quantize.embedding)
-                # model_input = ((h - vqgan.quantize.embedding.min()) /
-                #      (vqgan.quantize.embedding.max() -
-                #       vqgan.quantize.embedding.min())) * 2.0 - 1.0
-                model_input = h
-                # In MedicalDiffusion diffusion model is trained on inputs to quantization which is transformd to [-1, 1]
-                #######
-                #######
+            # if "train_on_codebooks" in config and config["train_on_codebooks"]:
+            #     ####
+            #     # ALDM approach
+            #     ####
+            #     h = vqgan.encoder(input)
+            #     h = vqgan.quant_conv(h)
+            #     vqgan.quantize.sane_index_shape = True  # get in spatial format
+            #     z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
+            #     # In ALDM implementation - diffusion model is trained on !!z_q!! - quantized representations scaled by its std
+            #     ## z_q / z_q.flatten().std()
+            #     model_input = z_q / z_q.flatten().std()
+            #     #######
+            #     #######
+            # else:
+            #     ####
+            #     # MedicalDiffusion approach
+            #     ####
+            #     h = vqgan.encoder(input)
+            #     h = vqgan.quant_conv(h)
+            #     print("vqgan.quantize.embedding ", vqgan.quantize.embedding)
+            #     # model_input = ((h - vqgan.quantize.embedding.min()) /
+            #     #      (vqgan.quantize.embedding.max() -
+            #     #       vqgan.quantize.embedding.min())) * 2.0 - 1.0
+            #     model_input = h
+            #     # In MedicalDiffusion diffusion model is trained on inputs to quantization which is transformd to [-1, 1]
+            #     #######
+            #     #######
 
             noise, predicted_noise = model(model_input)
             vloss = loss_fn(noise, predicted_noise)
@@ -116,37 +118,37 @@ def train_one_epoch(model, vqgan, optimizer, train_loader, config, loss_fn=nn.Cr
     running_loss = 0.
     for i, samples in enumerate(train_loader):
         volumes, conds = samples
-        input = volumes.to(device)
-        print("input shape ", input.shape)
+        model_input = volumes.to(device)
+        # print("input shape ", input.shape)
+        #
+        # if "train_on_codebooks" in config and config["train_on_codebooks"]:
+        #     ####
+        #     # ALDM approach
+        #     ####
+        #     h = vqgan.encoder(input)
+        #     h = vqgan.quant_conv(h)
+        #     vqgan.quantize.sane_index_shape = True  # get in spatial format
+        #     z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
+        #     # In ALDM implementation - diffusion model is trained on !!z_q!! - quantized representations scaled by its std
+        #     ## z_q / z_q.flatten().std()
+        #     model_input = z_q / z_q.flatten().std()
+        #     #######
+        #     #######
+        # else:
+        #     ####
+        #     # MedicalDiffusion approach
+        #     ####
+        #     h = vqgan.encoder(input)
+        #     h = vqgan.quant_conv(h)
+        #     model_input = ((h - vqgan.quantize.embedding.weight.min()) /
+        #          (vqgan.quantize.embedding.weight.max()-
+        #           vqgan.quantize.embedding.weight.min())) * 2.0 - 1.0
+        #     # In MedicalDiffusion diffusion model is trained on inputs to quantization which is transformd to [-1, 1]
+        #     #######
+        #     #######
 
-        if "train_on_codebooks" in config and config["train_on_codebooks"]:
-            ####
-            # ALDM approach
-            ####
-            h = vqgan.encoder(input)
-            h = vqgan.quant_conv(h)
-            vqgan.quantize.sane_index_shape = True  # get in spatial format
-            z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
-            # In ALDM implementation - diffusion model is trained on !!z_q!! - quantized representations scaled by its std
-            ## z_q / z_q.flatten().std()
-            model_input = z_q / z_q.flatten().std()
-            #######
-            #######
-        else:
-            ####
-            # MedicalDiffusion approach
-            ####
-            h = vqgan.encoder(input)
-            h = vqgan.quant_conv(h)
-            model_input = ((h - vqgan.quantize.embedding.weight.min()) /
-                 (vqgan.quantize.embedding.weight.max()-
-                  vqgan.quantize.embedding.weight.min())) * 2.0 - 1.0
-            # In MedicalDiffusion diffusion model is trained on inputs to quantization which is transformd to [-1, 1]
-            #######
-            #######
-
-        print("model input min: {}, max: {}".format(model_input.min(), model_input.max()))
-        print("model input shape ", model_input.shape)
+        #print("model input min: {}, max: {}".format(model_input.min(), model_input.max()))
+        #print("model input shape ", model_input.shape)
 
         # if torch.cuda.is_available() and use_cuda:
         #     samples = samples.cuda()
@@ -169,6 +171,69 @@ def train_one_epoch(model, vqgan, optimizer, train_loader, config, loss_fn=nn.Cr
 
     train_loss = running_loss / (i + 1)
     return train_loss
+
+
+def build_latents_dataset(vqgan, dataset, save_dir, dset_type="train", batch_size=1, device="cuda"):
+    os.makedirs(save_dir, exist_ok=True)
+
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    all_latents = []
+    all_conds = []
+
+    vqgan.eval()
+    vqgan.to(device)
+
+    with torch.no_grad():
+        for i, (volumes, conds) in enumerate(tqdm(loader)):
+            volumes = volumes.to(device).float()
+
+            if "train_on_codebooks" in config and config["train_on_codebooks"]:
+                ####
+                # ALDM approach
+                ####
+                h = vqgan.encoder(volumes)
+                h = vqgan.quant_conv(h)
+                vqgan.quantize.sane_index_shape = True  # get in spatial format
+                z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
+                # In ALDM implementation - diffusion model is trained on !!z_q!! - quantized representations scaled by its std
+                ## z_q / z_q.flatten().std()
+                model_input = z_q / z_q.flatten().std()
+                #######
+                #######
+            else:
+                ####
+                # MedicalDiffusion approach
+                ####
+                h = vqgan.encoder(volumes)
+                h = vqgan.quant_conv(h)
+                model_input = ((h - vqgan.quantize.embedding.weight.min()) /
+                               (vqgan.quantize.embedding.weight.max() -
+                                vqgan.quantize.embedding.weight.min())) * 2.0 - 1.0
+                # In MedicalDiffusion diffusion model is trained on inputs to quantization which is transformd to [-1, 1]
+                #######
+                #######
+
+            # Save latent & condition
+            all_latents.append(model_input.cpu().numpy())
+            all_conds.append([float(c) for c in conds])
+
+    # Concatenate along batch dimension
+    all_latents = np.concatenate(all_latents, axis=0)
+    all_conds = np.concatenate(all_conds, axis=0)
+
+    saved_data_path = os.path.join(save_dir, "latents_dataset_{}.npz".format(dset_type))
+
+    # Save as npz
+    np.savez_compressed(
+        os.path.join(save_dir, "latents_dataset_{}.npz".format(dset_type)),
+        latents=all_latents,
+        conds=all_conds
+    )
+    print(f"Saved latents dataset to {save_dir}, shape: {all_latents.shape}, conds: {all_conds.shape}")
+
+    return LatentsDataset(saved_data_path)
+
 
 
 def objective(trial, trials_config, train_loader, validation_loader):
@@ -208,9 +273,9 @@ def objective(trial, trials_config, train_loader, validation_loader):
 
         print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set), len(test_set)))
 
-        train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
-        validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
+        # train_loader = torch.utils.data.DataLoader(train_set, batch_size=config["batch_size_train"], shuffle=True)
+        # validation_loader = torch.utils.data.DataLoader(validation_set, batch_size=config["batch_size_train"], shuffle=False)
+        # test_loader = torch.utils.data.DataLoader(test_set, batch_size=config["batch_size_test"], shuffle=False)
 
     optimizer_name = "AdamW"
     if "optimizer_name" in trials_config:
@@ -234,7 +299,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
     if "cnn_config" in trials_config:
         cnn_config = trial.suggest_categorical("cnn_config", trials_config["cnn_config"])
 
-
     ################
     ## Load VQGAN ##
     ################
@@ -255,6 +319,20 @@ def objective(trial, trials_config, train_loader, validation_loader):
     vqgan_model_checkpoint.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vqgan_model_checkpoint.to(device)
+
+    latents_datasets_dir = os.path.join(output_dir, "latents_datasets")
+    latents_train_set = build_latents_dataset(vqgan_model_checkpoint, train_set, latents_datasets_dir,
+                                              dset_type="train", batch_size=1, device="cuda")
+    latents_validation_set = build_latents_dataset(vqgan_model_checkpoint, validation_set, latents_datasets_dir,
+                          dset_type="validation", batch_size=1, device="cuda")
+    latents_test_set = build_latents_dataset(vqgan_model_checkpoint, validation_set, latents_datasets_dir,
+                          dset_type="test", batch_size=1, device="cuda")
+
+    train_loader = torch.utils.data.DataLoader(latents_train_set, batch_size=config["batch_size_train"], shuffle=True)
+    validation_loader = torch.utils.data.DataLoader(latents_validation_set, batch_size=config["batch_size_train"],
+                                                    shuffle=False)
+    test_loader = torch.utils.data.DataLoader(latents_test_set, batch_size=config["batch_size_test"], shuffle=False)
+
     #vqgan_model_checkpoint, used_codebook_indices = get_used_codebook_indices(train_loader, vqgan_model_checkpoint)
 
     #num_classes = len(used_codebook_indices)
@@ -288,6 +366,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
     ### Diffusion model ###
     #######################
     diff_model = DiffusionModel(unet_diffusion_model, trials_config["image_size"], noise_scheduler).to(device)
+    #diff_model = ConditionalDiffusion(unet_diffusion_model, trials_config["image_size"], noise_scheduler).to(device)
 
     #########################
     #########################
@@ -345,7 +424,6 @@ def objective(trial, trials_config, train_loader, validation_loader):
             else:
                 scheduler = lr_scheduler.StepLR(optimizer, step_size=trial_scheduler["step_size"],
                                             gamma=trial_scheduler["gamma"])
-
 
     for epoch in range(config["num_epochs"]):
         #try:
