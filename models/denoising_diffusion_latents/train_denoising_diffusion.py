@@ -309,7 +309,7 @@ def objective(trial, trials_config):
     unet_config = trial.suggest_categorical("unet_config", trials_config["unet_config"]) \
         if "unet_config" in trials_config else {}
 
-    if trials_config["model_class_name"] == "Unet3D":
+    if trials_config["unet_class_name"] == "Unet3D":
         model_class = UNet3D
     unet_diffusion_model = model_class(**unet_config)
 
@@ -379,7 +379,6 @@ def objective(trial, trials_config):
         # Save best model
         if avg_vloss < best_vloss:
             best_vloss, best_epoch = avg_vloss, epoch
-            print("best vloss", best_vloss)
             model_state_dict = ema_model.state_dict()
             optimizer_state_dict = optimizer.state_dict() if optimizer else {}
 
@@ -396,6 +395,18 @@ def objective(trial, trials_config):
 
         # Optuna pruning
         trial.report(avg_vloss, epoch)
+
+    # Save the best model
+    model_path = os.path.join(output_dir, f"trial_{trial.number}_model_best.pt")
+    torch.save({
+        'best_epoch': best_epoch,
+        'best_model_state_dict': model_state_dict,
+        'best_optimizer_state_dict': optimizer_state_dict,
+        'best_scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'train_loss': avg_loss_list,
+        'valid_loss': avg_vloss_list,
+        'training_time': time.time() - start_time,
+    }, model_path)
 
     return best_vloss
 
