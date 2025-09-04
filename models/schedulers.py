@@ -62,50 +62,45 @@ class NoiseScheduler(nn.Module):
         "sigmoid": sigmoid_beta_schedule,
     }
 
-    def __init__(self, beta_scheduler_type, num_timesteps, num_gen_timesteps=None, scheduler_kwargs=None, use_cuda=True):
+    def __init__(self, beta_scheduler_type, num_timesteps, num_gen_timesteps=None, scheduler_kwargs=None):
         super().__init__()
         self.num_timesteps = num_timesteps
         self.num_gen_timesteps = num_gen_timesteps if num_gen_timesteps is not None else num_timesteps
         self.beta_scheduler_fn = self.SCHEDULER_MAPPING.get(beta_scheduler_type)
         if self.beta_scheduler_fn is None:
-            raise ValueError("An unknown beta scheduler type: {}".format(beta_scheduler_type))
+            raise ValueError(f"Unknown beta scheduler type: {beta_scheduler_type}")
 
         if scheduler_kwargs is None:
             scheduler_kwargs = {}
 
         # βₜ: noise schedule
-        self.betas = self.beta_scheduler_fn(num_timesteps, **scheduler_kwargs)
+        betas = self.beta_scheduler_fn(num_timesteps, **scheduler_kwargs)
 
         # αₜ = 1 - βₜ
-        self.alphas = 1.0 - self.betas
+        alphas = 1.0 - betas
 
         # ᾱₜ = ∏ₛ=1^t αₛ
-        alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
 
         # ᾱₜ₋₁ with ᾱ₀ = 1
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
 
         # Posterior variance (used in reverse process):
-        # posterior_varₜ = βₜ * (1 - ᾱₜ₋₁) / (1 - ᾱₜ)
-        self.posterior_variance = (
-                self.betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
-        )
+        posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
 
-        # Precomputed terms for sampling:
-        # √(1 / αₜ)
-        self.sqrt_recip_alphas = torch.sqrt(1.0 / self.alphas)
+        # Precomputed terms for sampling
+        sqrt_recip_alphas = torch.sqrt(1.0 / alphas)
+        sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
+        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
 
-        # √(ᾱₜ), used for noise prediction
-        self.sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
-
-        # √(1 - ᾱₜ), used for adding noise
-        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
-
-        # Move to GPU if available
-        if torch.cuda.is_available() and use_cuda:
-            self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.cuda()
-            self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.cuda()
-
+        # --- Register all as buffers ---
+        self.register_buffer("betas", betas)
+        self.register_buffer("alphas", alphas)
+        self.register_buffer("alphas_cumprod", alphas_cumprod)
+        self.register_buffer("posterior_variance", posterior_variance)
+        self.register_buffer("sqrt_recip_alphas", sqrt_recip_alphas)
+        self.register_buffer("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", sqrt_one_minus_alphas_cumprod)
 
 
 class CategoricalNoiseScheduler(nn.Module):
