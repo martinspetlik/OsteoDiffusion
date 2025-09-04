@@ -58,7 +58,7 @@ def objective(trial, trials_config, train_loader, validation_loader):
         if "n_test_samples" in trials_config and trials_config["n_test_samples"] is not None:
             config["n_test_samples"] = trials_config["n_test_samples"]
 
-        train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir, serialize_path=output_dir)
+        train_set, validation_set, test_set = prepare_dataset(study, config, data_dir=data_dir,  data_file_name=trials_config["data_file_name"], serialize_path=output_dir)
 
         print("len(trainset): {}, len(valset): {}, len(testset): {}".format(len(train_set), len(validation_set),
                                                                             len(test_set)))
