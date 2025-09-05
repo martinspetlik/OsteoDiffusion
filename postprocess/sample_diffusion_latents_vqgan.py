@@ -10,7 +10,6 @@ from models.denoising_diffusion_latents.Unet3D import UNet3D
 from models.denoising_diffusion_latents.conditional_denoising_diffusion import ConditionalDiffusion
 from models.vqgan.vqgan_model import VQGAN
 from models.schedulers import NoiseScheduler
-import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -141,7 +140,7 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, dataset
 
             np.save(os.path.join(sample_dir, "decoded_samples"), np.squeeze(decoded_samples.cpu().numpy()))
 
-            render_3d_scan(np.squeeze(decoded_samples.cpu().numpy()), title="Generated sample", fig_name=os.path.join(sample_dir, "gen_sample.png"), show=False)
+            #render_3d_scan(np.squeeze(decoded_samples.cpu().numpy()), title="Generated sample", fig_name=os.path.join(sample_dir, "gen_sample.png"), show=False)
 
             #render_3d_scan(np.load(os.path.join(sample_dir, "decoded_samples.npy")), fig_name=None)
 
