@@ -39,7 +39,7 @@ def load_diffusion_model(results_dir, model_path=None, device="cuda"):
     print("Loading model checkpoint from:", model_path)
 
     # Pick model class
-    if trials_config["model_class_name"] == "Unet3D":
+    if trials_config["unet_class_name"] == "Unet3D":
         model_class = UNet3D
     else:
         raise NotImplementedError("Only UNet3D model is supported")
@@ -58,7 +58,7 @@ def load_diffusion_model(results_dir, model_path=None, device="cuda"):
 
     # Load checkpoint
     checkpoint = torch.load(model_path, map_location=device)
-    diff_model.load_state_dict(checkpoint['best_model_state_dict'])
+    diff_model.load_state_dict(checkpoint['best_model_state_dict'], strict=False)
     diff_model.to(device)
     diff_model.eval()
 
@@ -105,7 +105,7 @@ def sample(diff_model, checkpoint, trials_config, n_samples=10, batch_size=1, co
         for i in range(n_samples):
             # If no conditioning provided, use zeros (unconditional sampling)
             if cond is None:
-                cond = torch.zeros((batch_size, trials_config["cond_dim"]), device=next(diff_model.parameters()).device)
+                cond = torch.zeros((batch_size, trials_config["unet_config"][0]["cond_dim"]), device=next(diff_model.parameters()).device)
 
             samples = diff_model.sample(
                 batch_size=batch_size,
@@ -270,9 +270,7 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--cuda", default=False, action='store_true', help="use cuda")
     args = parser.parse_args(sys.argv[1:])
 
-    model_path = "/home/martin/Documents/Bones_diff_model/optuna_runs/lumi/denoising_diffusion_latents/samples_320_192_320/n_codes_256/exp_2/seed_12345/trial_0_model_best_74.pt"
-
-    diffusion_model, checkpoint, trials_config = load_diffusion_model(args.results_dir, model_path=model_path)
+    diffusion_model, checkpoint, trials_config = load_diffusion_model(args.results_dir)
 
     sample(diffusion_model, checkpoint, trials_config)
 
