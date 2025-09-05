@@ -71,10 +71,12 @@ def load_diffusion_model(results_dir, model_path=None):
     return diff_model, trials_config
 
 
-def load_vqgan_model(results_dir):
+def load_vqgan_model(results_dir, vqgan_model_path=None):
     optuna_study = load_study(results_dir)
 
-    vqgan_model_path = os.path.join(results_dir, "logger/version_0/checkpoints/val/last.ckpt")
+    if vqgan_model_path is None:
+        vqgan_model_path = os.path.join(results_dir, "logger/version_0/checkpoints/val/last.ckpt")
+    print("VQGAN model path ", vqgan_model_path)
 
     vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path,
                                                         **optuna_study.best_trial.params["model_config"])
@@ -157,12 +159,12 @@ if __name__ == "__main__":
         sampling_config = yaml.load(f, Loader=yaml.FullLoader)
 
     latent_diffusion_model, trials_config = load_diffusion_model(sampling_config["denoising_diffusion_results_dir"])
-    vqgan_model = load_vqgan_model(sampling_config["vqgan_results_dir"])
+
+    vqgan_model_path = None
+    if "vqgan_model_path" in sampling_config:
+        vqgan_model_path = sampling_config["vqgan_model_path"]
+
+    vqgan_model = load_vqgan_model(sampling_config["vqgan_results_dir"], vqgan_model_path=vqgan_model_path)
     dataset = load_dataset(sampling_config["dataset_dir"], sampling_config["dataset_data_file_name"])
 
-
     generate_samples(latent_diffusion_model, vqgan_model, trials_config, dataset, results_dir=args.results_dir)
-
-
-
-
