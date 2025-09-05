@@ -1,20 +1,27 @@
+import os
+import glob
 import torch
 from torch.utils.data import Dataset
 import numpy as np
 
 
 class LatentsDataset(Dataset):
-    def __init__(self, latents_file):
-        data = np.load(latents_file)
-        self.latents = data["latents"]
-        self.conds = data["conds"]
+    """
+    Dataset that loads individual latent samples stored as .npz files.
+    Each file should contain keys: 'latent' and 'cond'.
+    """
+
+    def __init__(self, latents_dir):
+        # collect all npz files in directory
+        self.files = sorted(glob.glob(os.path.join(latents_dir, "*.npz")))
+        if len(self.files) == 0:
+            raise ValueError(f"No .npz files found in {latents_dir}")
 
     def __len__(self):
-        return len(self.latents)
+        return len(self.files)
 
     def __getitem__(self, idx):
-        x = torch.tensor(self.latents[idx], dtype=torch.float32)
-        cond = torch.tensor(self.conds[idx], dtype=torch.float32)
+        data = np.load(self.files[idx])
+        x = torch.as_tensor(data["latent"], dtype=torch.float32)
+        cond = torch.as_tensor(data["cond"], dtype=torch.float32)
         return x, cond
-
-
