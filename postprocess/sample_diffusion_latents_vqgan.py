@@ -107,7 +107,7 @@ def render_3d_scan(scan, title="3D Scan", fig_name="", show=True):
         mlab.show()
 
 
-def generate_samples(latent_diffusion_model, vqgan_model, trials_config, dataset, cond=None, cond_scale=1.0, results_dir=None):
+def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=None, cond_scale=1.0, results_dir=None):
     batch_size_sample = 1
     n_samples = 50
     generated_samples = []
@@ -165,6 +165,6 @@ if __name__ == "__main__":
         vqgan_model_path = sampling_config["vqgan_model_path"]
 
     vqgan_model = load_vqgan_model(sampling_config["vqgan_results_dir"], vqgan_model_path=vqgan_model_path)
-    dataset = load_dataset(sampling_config["dataset_dir"], sampling_config["dataset_data_file_name"])
+    #dataset = load_dataset(sampling_config["dataset_dir"], sampling_config["dataset_data_file_name"])
 
-    generate_samples(latent_diffusion_model, vqgan_model, trials_config, dataset, results_dir=args.results_dir)
+    generate_samples(latent_diffusion_model, vqgan_model, trials_config, results_dir=args.results_dir)
