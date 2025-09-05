@@ -126,92 +126,71 @@ def train_one_epoch(
     return train_loss
 
 
-def build_latents_dataset(vqgan, dataset, save_dir, dset_type="train", batch_size=1, device="cuda"):
+def build_latents_dataset(vqgan, dataset, save_dir, dset_type="train", device="cuda"):
     """
     Build a latent-space dataset using a trained VQGAN encoder.
-    The dataset is saved as .npz files for efficient re-use.
+    Each sample is saved into a separate .npz file for efficient streaming.
 
     :param vqgan: Pre-trained VQGAN model (with encoder + quantizer).
     :param dataset: Original dataset of 3D CT volumes + conditions.
     :param save_dir: Directory where latent datasets will be stored.
     :param dset_type: Dataset split type ("train", "validation", "test").
-    :param batch_size: Mini-batch size for encoding data.
     :param device: Device to run computations on ("cuda" or "cpu").
-    :return: LatentsDataset object containing compressed (z, cond) pairs.
     """
-
     os.makedirs(save_dir, exist_ok=True)
 
-    # Wrap dataset into a DataLoader (no shuffle = preserve order)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    # Directory for this dataset split
+    split_dir = os.path.join(save_dir, f"latents_dataset_{dset_type}")
+    os.makedirs(split_dir, exist_ok=True)
 
-    all_latents = []  # stores VQGAN latent representations
-    all_conds = []    # stores conditioning variables
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    # Put VQGAN into eval mode to disable dropout & batchnorm updates
     vqgan.eval()
     vqgan.to(device)
 
-    with torch.no_grad():  # no gradient tracking needed during encoding
-        for i, (volumes, conds) in enumerate(tqdm(loader)):
-            volumes = volumes.to(device).float()
+    counter = 0
+    with torch.no_grad():
+        for i, (volume, conds) in enumerate(tqdm(loader)):
+            volume = volume.to(device).float()
 
             if "train_on_codebooks" in config and config["train_on_codebooks"]:
                 # --- ALDM approach ---
-                # Train diffusion model on discrete quantized VQGAN latents
-                h = vqgan.encoder(volumes)   # encode image into feature map
-                h = vqgan.quant_conv(h)      # linear projection before quantization
+                h = vqgan.encoder(volume)
+                h = vqgan.quant_conv(h)
                 vqgan.quantize.sane_index_shape = True
                 z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
-
-                # Scale quantized latents by their std dev for normalization
                 model_input = z_q / z_q.flatten().std()
 
             else:
                 # --- MedicalDiffusion approach ---
-                # Train diffusion model on continuous *pre-quantized* embeddings
-                h = vqgan.encoder(volumes)
+                h = vqgan.encoder(volume)
                 h = vqgan.quant_conv(h)
 
-                # Normalize h to [-1, 1] range using quantizer embeddings
                 model_input = ((h - vqgan.quantize.embedding.weight.min()) /
                                (vqgan.quantize.embedding.weight.max() -
                                 vqgan.quantize.embedding.weight.min())) * 2.0 - 1.0
 
-                # Save min/max of embeddings for reproducibility
-                if not os.path.exists(os.path.join(save_dir, "quantize_embedings_min_max")):
+                if not os.path.exists(os.path.join(save_dir, "quantize_embedings_min_max.npy")):
                     np.save(
-                        os.path.join(save_dir, "quantize_embedings_min_max"),
+                        os.path.join(save_dir, "quantize_embedings_min_max.npy"),
                         (
                             vqgan.quantize.embedding.weight.min().cpu().numpy(),
                             vqgan.quantize.embedding.weight.max().cpu().numpy()
                         )
                     )
 
-            # Save latent representation (to CPU → numpy)
-            all_latents.append(model_input.cpu().numpy())
-
-            # Convert conditions to numpy array
-            # If conds is list/tuple → stack into a single tensor
+            model_input_np = np.squeeze(model_input.cpu().numpy())
             conds_np = torch.stack(conds, dim=1).cpu().numpy() if isinstance(conds, (list, tuple)) else conds.cpu().numpy()
-            all_conds.append(conds_np)
+            conds_np = np.squeeze(conds_np)
 
-    # Concatenate all batches along batch dimension
-    all_latents = np.concatenate(all_latents, axis=0)
-    all_conds = np.concatenate(all_conds, axis=0)
+            # Save one sample per file
+            sample_path = os.path.join(split_dir, f"sample_{counter:04d}.npz")
+            np.savez_compressed(sample_path, latent=model_input_np, cond=conds_np)
+            counter += 1
 
-    # Save dataset as compressed .npz file
-    saved_data_path = os.path.join(save_dir, f"latents_dataset_{dset_type}.npz")
-    np.savez_compressed(
-        saved_data_path,
-        latents=all_latents,
-        conds=all_conds
-    )
+    print(f" Saved {counter} samples into {split_dir}")
 
-    print(f" Saved latents dataset to {saved_data_path}, "
-          f"shape: {all_latents.shape}, conds: {all_conds.shape}")
-
-    return LatentsDataset(saved_data_path)
+    return LatentsDataset(split_dir)
 
 
 def objective(trial, trials_config):
@@ -292,11 +271,11 @@ def objective(trial, trials_config):
     # Build latent datasets
     latents_datasets_dir = os.path.join(output_dir, "latents_datasets")
     latents_train_set = build_latents_dataset(vqgan_model_checkpoint, train_set, latents_datasets_dir,
-                                              dset_type="train", batch_size=1, device="cuda")
+                                              dset_type="train", device="cuda")
     latents_validation_set = build_latents_dataset(vqgan_model_checkpoint, validation_set, latents_datasets_dir,
-                                                   dset_type="validation", batch_size=1, device="cuda")
+                                                   dset_type="validation", device="cuda")
     latents_test_set = build_latents_dataset(vqgan_model_checkpoint, validation_set, latents_datasets_dir,
-                                             dset_type="test", batch_size=1, device="cuda")
+                                             dset_type="test", device="cuda")
 
     # Replace loaders with latent space versions
     train_loader = torch.utils.data.DataLoader(latents_train_set, batch_size=config["batch_size_train"], shuffle=True)
@@ -477,7 +456,8 @@ if __name__ == '__main__':
     # --- Output directory handling ---
     output_dir = os.path.join(output_dir, f"seed_{random_seed}")
     if os.path.exists(output_dir) and not args.append:
-        shutil.rmtree(output_dir)  # overwrite previous results
+        #shutil.rmtree(output_dir)  # overwrite previous results
+        raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
     if not args.append:
         os.mkdir(output_dir)
     elif not os.path.exists(output_dir):
