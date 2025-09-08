@@ -5,11 +5,14 @@ import joblib
 import torch
 import yaml
 import numpy as np
+import torch.nn.functional as F
 from dataset.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
 from visualization.visualize_data import plot_train_valid_loss
 
+
 from models.denoising_diffusion_latents.Unet3D import UNet3D
 from models.denoising_diffusion_latents.conditional_denoising_diffusion import ConditionalDiffusion
+from dataset.denoising_diffusion_latents.latents_dataset import LatentsDataset
 from models.schedulers import NoiseScheduler
 import matplotlib.pyplot as plt
 import scipy as sc
@@ -90,6 +93,110 @@ def render_3d_scan(scan, title="3D Scan", fig_name=""):
     mlab.show()
 
 
+def plot_hist(sample, title="Histogram", bins=100):
+    """
+    Plots histogram of values inside a PyTorch tensor.
+    """
+    values = sample.flatten()
+    plt.figure(figsize=(6, 4))
+    plt.hist(values, bins=bins, color='blue', alpha=0.7)
+    plt.title(title)
+    plt.xlabel("Value")
+    plt.ylabel("Frequency")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.show()
+
+
+def train_valid_results(results_dir, diff_model, checkpoint, trials_config, n_samples=10, batch_size=1, cond=None, cond_scale=1.0):
+    with torch.no_grad():
+        print("Best epoch:", checkpoint['best_epoch'])
+        print("Training time (s):", checkpoint["training_time"])
+        plot_train_valid_loss(checkpoint['train_loss'], checkpoint['valid_loss'])
+
+        generated_samples = []
+
+        latents_datasets_dir = os.path.join(results_dir, "latents_datasets")
+
+        train_dataset_path = os.path.join(latents_datasets_dir, "latents_dataset_train")
+        valid_dataset_path = os.path.join(latents_datasets_dir, "latents_dataset_validation")
+        test_dataset_path = os.path.join(latents_datasets_dir, "latents_dataset_test")
+
+        train_dataset = LatentsDataset(train_dataset_path)
+        valid_dataset = LatentsDataset(valid_dataset_path)
+
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1, shuffle=False)
+        validation_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=1, shuffle=False)
+
+        reconstructions = []
+        with torch.no_grad():
+            for i, (volumes, conds) in enumerate(train_loader):
+                print("volumes min: {}, max: {}".format(volumes.min(), volumes.max()))
+                volumes = volumes.to(device).float()
+                conds = conds.to(device).float()
+
+                # Forward pass returns (true_noise, predicted_noise)
+                true_noise, pred_noise = diff_model(volumes, conds)
+                mse = F.mse_loss(pred_noise, true_noise, reduction="mean").item()
+                print("MSE ", mse)
+
+                print("conds ", conds)
+
+                # ----------------------------
+                # 1) Show ground-truth volumes
+                # ----------------------------
+                gt = volumes.cpu().numpy()
+                print(f"[{i}] Ground truth shape: {gt.shape}")
+
+                # ----------------------------
+                # 2) Generate samples
+                # ----------------------------
+                samples = diff_model.sample(
+                    batch_size=volumes.shape[0],
+                    cond=conds,
+                    cond_scale=cond_scale,
+                ).cpu().numpy()
+
+                # Clamp to training range
+                samples = torch.clamp(samples, -1, 1)
+
+                # print("betas range:", diff_model.noise_scheduler.betas.min().item(), diff_model.noise_scheduler.betas.max().item())
+                # print("sqrt_recip_alphas range:", diff_model.noise_scheduler.sqrt_recip_alphas.min().item(),
+                #       diff_model.noise_scheduler.sqrt_recip_alphas.max().item())
+                # print("sqrt_one_minus_alphas_cumprod range:",
+                #       diff_model.noise_scheduler.sqrt_one_minus_alphas_cumprod.min().item(),
+                #       diff_model.noise_scheduler.sqrt_one_minus_alphas_cumprod.max().item())
+
+                generated_samples.append(samples)
+                reconstructions.append(gt)
+
+                print("samples min: {}, max: {}".format(samples.min(), samples.max()))
+
+                print("samples.shape ", samples.shape)
+                plot_hist(volumes.cpu().numpy())
+                plot_hist(samples)
+
+                # ----------------------------
+                # Optional: visualize one example
+                # ----------------------------
+                if i < n_samples:
+                    render_3d_scan(np.squeeze(gt)[0,...], title=f"Ground Truth {i}", fig_name=f"gt_{i}.png")
+                    render_3d_scan(np.squeeze(samples)[0, ...], title=f"Generated {i}", fig_name=f"gen_{i}.png")
+
+                if i >= n_samples - 1:
+                    break
+
+        # diff_model.eval()  # set evaluation mode
+        # with torch.no_grad():
+        #     for i, samples in enumerate(train_loader):
+        #         # unpack batch
+        #         volumes, conds = samples
+        #         volumes = volumes.to(device)
+        #         conds = conds.to(device)
+        #
+        #         # forward pass
+        #         noise, predicted_noise = diff_model(volumes, conds)
+
+
 def sample(diff_model, checkpoint, trials_config, n_samples=10, batch_size=1, cond=None, cond_scale=1.0):
     """
     Generate samples from a trained ConditionalDiffusion model.
@@ -111,10 +218,12 @@ def sample(diff_model, checkpoint, trials_config, n_samples=10, batch_size=1, co
                 batch_size=batch_size,
                 cond=cond,
                 cond_scale=cond_scale,
-                inverse_transform=None  # plug in decoder or rescaling if you have one
             )
 
             samples = samples.cpu()
+
+            print("samples min: {}, max: {}".format(np.min(samples.numpy()) , np.max(samples.numpy())))
+
             generated_samples.append(samples)
 
             # Render and histogram (optional)
@@ -247,9 +356,6 @@ def calculate_fgd(real_features, generated_features):
     return fgd
 
 
-
-
-
 def load_study(results_dir):
     study = joblib.load(os.path.join(results_dir, "study.pkl"))
     print("Best trial until now:")
@@ -261,9 +367,6 @@ def load_study(results_dir):
     return study
 
 
-
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('results_dir', help='results directory')
@@ -271,6 +374,8 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
 
     diffusion_model, checkpoint, trials_config = load_diffusion_model(args.results_dir)
+
+    #train_valid_results(args.results_dir, diffusion_model, checkpoint, trials_config)
 
     sample(diffusion_model, checkpoint, trials_config)
 
