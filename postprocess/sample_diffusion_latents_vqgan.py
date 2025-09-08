@@ -10,6 +10,7 @@ from models.denoising_diffusion_latents.Unet3D import UNet3D
 from models.denoising_diffusion_latents.conditional_denoising_diffusion import ConditionalDiffusion
 from models.vqgan.vqgan_model import VQGAN
 from models.schedulers import NoiseScheduler
+from models.auxiliary_functions import inverse_latent_transform
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -107,7 +108,22 @@ def render_3d_scan(scan, title="3D Scan", fig_name="", show=True):
         mlab.show()
 
 
-def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=None, cond_scale=1.0, results_dir=None):
+def plot_hist(sample, title="Histogram", bins=100):
+    """
+    Plots histogram of values inside a PyTorch tensor.
+    """
+    import matplotlib.pyplot as plt
+    values = sample.flatten()
+    plt.figure(figsize=(6, 4))
+    plt.hist(values, bins=bins, color='blue', alpha=0.7)
+    plt.title(title)
+    plt.xlabel("Value")
+    plt.ylabel("Frequency")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.show()
+
+
+def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=None, cond_scale=1.0, results_dir=None, clamp_diffusion_samples=False):
     batch_size_sample = 1
     n_samples = 50
     generated_samples = []
@@ -128,17 +144,30 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
                 batch_size=batch_size_sample,
                 cond=cond,
                 cond_scale=cond_scale,
-                inverse_transform=None
-            ).to(torch.float32)
+            )
+
+            if clamp_diffusion_samples:
+                samples = torch.clamp(samples, -1, 1)
+
+            print("samples min: {}, max: {}".format(samples.min(), samples.max()))
+
+            print("samples.shape ", samples.shape)
+            #plot_hist(samples.cpu().numpy())
 
             generated_samples.append(samples.cpu())
+
+            samples_to_vqgan = inverse_latent_transform(samples, vqgan_model).to(dtype=torch.float32)
+
+            print("samples_to_vqgan.dtype ", samples_to_vqgan.dtype)
+            print("samples_to_vqgan min: {}, max: {}".format(samples_to_vqgan.min(), samples_to_vqgan.max()))
 
             if "train_on_codebooks" in trials_config and trials_config["train_on_codebooks"]:
                 pass
             else:
-                quant, emb_loss, info = vqgan_model.quantize(samples)
+                quant, emb_loss, info = vqgan_model.quantize(samples_to_vqgan)
                 decoded_samples = vqgan_model.decode(quant)
 
+            print("decoded_samples min: {}, max: {}".format(decoded_samples.min(), decoded_samples.max()))
 
             np.save(os.path.join(sample_dir, "decoded_samples"), np.squeeze(decoded_samples.cpu().numpy()))
 
@@ -167,4 +196,5 @@ if __name__ == "__main__":
     vqgan_model = load_vqgan_model(sampling_config["vqgan_results_dir"], vqgan_model_path=vqgan_model_path)
     #dataset = load_dataset(sampling_config["dataset_dir"], sampling_config["dataset_data_file_name"])
 
-    generate_samples(latent_diffusion_model, vqgan_model, trials_config, results_dir=args.results_dir)
+    generate_samples(latent_diffusion_model, vqgan_model, trials_config, results_dir=args.results_dir,
+                     clamp_diffusion_samples=sampling_config["clamp_diffusion_samples"])
