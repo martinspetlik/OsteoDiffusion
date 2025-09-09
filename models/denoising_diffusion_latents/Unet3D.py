@@ -382,7 +382,7 @@ class UNet3D(nn.Module):
     def __init__(
             self,
             dim,
-            cond_dim=None,
+            cond_dim=0,
             out_dim=None,
             dim_mults=(1, 2, 4, 8),
             channels=3,
@@ -400,6 +400,7 @@ class UNet3D(nn.Module):
         self.channels = channels
         self.dim = dim
         self._use_temporal_attention = use_temporal_attention
+
 
         rotary_emb = None
         if use_rotary_emb:
@@ -440,7 +441,7 @@ class UNet3D(nn.Module):
         )
 
         # --- Condition embedding ---
-        if cond_dim is not None:
+        if cond_dim > 0:
             self.cond_mlp = nn.Sequential(
                 nn.Linear(cond_dim, time_dim),
                 nn.GELU(),

@@ -6,25 +6,27 @@ import joblib
 import torch
 import torch.nn as nn
 import optuna
+import shutil
 from optuna.trial import TrialState
 from optuna.samplers import TPESampler, BruteForceSampler
 import time
 import yaml
-import shutil
 from tqdm import tqdm
 import numpy as np
 import torch.optim as optim
 from torch.optim import lr_scheduler
-from models.auxiliary_functions import get_loss_fn
+from models.auxiliary_functions import get_loss_fn, forward_latent_transform
 from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
 from dataset.denoising_diffusion_latents.latents_dataset import LatentsDataset
 from torch.utils.data import DataLoader
 from models.vqgan.vqgan_model import VQGAN
-from models.cnn_diffusion.diffusion_model import DiffusionModel
 from models.denoising_diffusion_latents.conditional_denoising_diffusion import ConditionalDiffusion
 from models.schedulers import NoiseScheduler
 from models.denoising_diffusion_latents.Unet3D import UNet3D
 from models.denoising_diffusion_latents.Unet3D import EMA
+from models.mlflow_wrapper import MLflowWrapper
+from transformers import get_cosine_schedule_with_warmup
+
 
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -166,9 +168,7 @@ def build_latents_dataset(vqgan, dataset, save_dir, dset_type="train", device="c
                 h = vqgan.encoder(volume)
                 h = vqgan.quant_conv(h)
 
-                model_input = ((h - vqgan.quantize.embedding.weight.min()) /
-                               (vqgan.quantize.embedding.weight.max() -
-                                vqgan.quantize.embedding.weight.min())) * 2.0 - 1.0
+                model_input = forward_latent_transform(h, vqgan)
 
                 if not os.path.exists(os.path.join(save_dir, "quantize_embedings_min_max.npy")):
                     np.save(
@@ -193,7 +193,7 @@ def build_latents_dataset(vqgan, dataset, save_dir, dset_type="train", device="c
     return LatentsDataset(split_dir)
 
 
-def objective(trial, trials_config):
+def objective(trial, trials_config, mlf_wrapper):
     """
     Optuna objective function for training and evaluating a conditional diffusion model.
 
@@ -207,6 +207,7 @@ def objective(trial, trials_config):
 
     :param trial: Optuna trial object for hyperparameter optimization.
     :param trials_config: dictionary of configuration options and search spaces.
+    :param mlf_wrapper: MLFlow wrapper to log metrics and hyperparameters
     :return: best validation loss (float).
     """
     # ------------------------
@@ -293,7 +294,7 @@ def objective(trial, trials_config):
     unet_diffusion_model = model_class(**unet_config)
 
     noise_scheduler = NoiseScheduler(**trials_config["noise_scheduler_params"])
-    diff_model = ConditionalDiffusion(unet_diffusion_model, trials_config["image_size"], noise_scheduler).to(device)
+    diff_model = ConditionalDiffusion(unet_diffusion_model, trials_config["image_size"], noise_scheduler, trials_config["cond_scale"]).to(device)
 
     # ------------------------
     # Optimizer + Scheduler
@@ -310,6 +311,14 @@ def objective(trial, trials_config):
                 optimizer, mode="min",
                 patience=trial_scheduler["patience"],
                 factor=trial_scheduler["factor"]
+            )
+        elif trial_scheduler["class"] == "CosineAnnealingLR":
+            torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config["num_epochs"])
+        elif trial_scheduler["class"] == "CosineAnnealingWithWarmup":
+            scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=trial_scheduler["num_warmup_steps"],
+                num_training_steps=trial_scheduler["num_training_steps"]
             )
         else:
             scheduler = lr_scheduler.StepLR(
@@ -353,18 +362,27 @@ def objective(trial, trials_config):
 
         avg_loss_list.append(avg_loss)
         avg_vloss_list.append(avg_vloss)
+
+        # Log to MLflow
+        if mlf_wrapper is not None:
+            mlf_wrapper.log_metric("train_loss", avg_loss, step=epoch)
+            mlf_wrapper.log_metric("val_loss", avg_vloss, step=epoch)
+            mlf_wrapper.log_metric("val_acc", avg_vacc, step=epoch)
+
         print(f"epoch: {epoch}, LOSS train: {avg_loss:.4f}, val: {avg_vloss:.4f}, ACC val: {avg_vacc:.4f}")
 
         # Save best model
         if avg_vloss < best_vloss:
             best_vloss, best_epoch = avg_vloss, epoch
             model_state_dict = ema_model.state_dict()
+            diff_model_state_dict = diff_model.state_dict()
             optimizer_state_dict = optimizer.state_dict() if optimizer else {}
 
             model_path_epoch = os.path.join(output_dir, f"trial_{trial.number}_model_best_{epoch}.pt")
             torch.save({
                 'best_epoch': best_epoch,
                 'best_model_state_dict': model_state_dict,
+                'best_diff_model_state_dict': diff_model_state_dict,
                 'best_optimizer_state_dict': optimizer_state_dict,
                 'best_scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'train_loss': avg_loss_list,
@@ -380,6 +398,7 @@ def objective(trial, trials_config):
     torch.save({
         'best_epoch': best_epoch,
         'best_model_state_dict': model_state_dict,
+        'best_diff_model_state_dict': diff_model_state_dict,
         'best_optimizer_state_dict': optimizer_state_dict,
         'best_scheduler_state_dict': scheduler.state_dict() if scheduler else None,
         'train_loss': avg_loss_list,
@@ -418,6 +437,8 @@ if __name__ == '__main__':
     parser.add_argument('output_dir', help='Path to store Optuna results')
     parser.add_argument("-c", "--cuda", default=False, action='store_true', help="Use CUDA if available")
     parser.add_argument("-a", "--append", default=False, action='store_true', help="Append to existing results")
+    parser.add_argument("-m", "--mlflow", default=False, action='store_true', help="use mlflow to track experiments")
+
     args = parser.parse_args(sys.argv[1:])
 
     # --- Setup paths & device ---
@@ -438,6 +459,15 @@ if __name__ == '__main__':
         "seed": trials_config.get("random_seed", 12345),
         "output_dir": output_dir,
     }
+
+    mlf_wrapper = MLflowWrapper(args.mlflow)
+
+    if args.mlflow:
+        mlflow_config = trials_config["mlflow_config"]
+        assert "tracking_uri" in mlflow_config, "MLFlow tracking uri is missing in the configuration"
+        mlf_wrapper.set_tracking_uri(mlflow_config["tracking_uri"])
+        mlf_wrapper.set_experiment(mlflow_config["experiment_name"])
+        mlf_wrapper.log_params(trials_config)
 
     # --- Optuna trial count ---
     num_trials = trials_config["num_trials"]
@@ -474,7 +504,7 @@ if __name__ == '__main__':
 
     # --- Objective function wrapper ---
     def obj_func(trial):
-        return objective(trial, trials_config)
+        return objective(trial, trials_config, mlf_wrapper=mlf_wrapper)
 
     # --- Run Optuna optimization ---
     study.optimize(obj_func, n_trials=num_trials)

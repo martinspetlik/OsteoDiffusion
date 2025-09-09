@@ -102,6 +102,37 @@ class NoiseScheduler(nn.Module):
         self.register_buffer("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
         self.register_buffer("sqrt_one_minus_alphas_cumprod", sqrt_one_minus_alphas_cumprod)
 
+        # # --- Visualization for debugging ---
+        # import matplotlib.pyplot as plt
+        #
+        # plt.figure(figsize=(12, 4))
+        #
+        # plt.subplot(1, 3, 1)
+        # plt.plot(alphas_cumprod.cpu().numpy())
+        # plt.title("ᾱₜ")
+        # plt.xlabel("timestep")
+        # plt.ylabel("ᾱₜ")
+        # plt.grid(True)
+        #
+        # plt.subplot(1, 3, 2)
+        # plt.plot(sqrt_alphas_cumprod.cpu().numpy())
+        # plt.title("sqrt(ᾱₜ)")
+        # plt.xlabel("timestep")
+        # plt.ylabel("sqrt(ᾱₜ)")
+        # plt.grid(True)
+        #
+        # plt.subplot(1, 3, 3)
+        # plt.plot(sqrt_one_minus_alphas_cumprod.cpu().numpy())
+        # plt.title("sqrt(1-ᾱₜ)")
+        # plt.xlabel("timestep")
+        # plt.ylabel("sqrt(1-ᾱₜ)")
+        # plt.grid(True)
+        #
+        # plt.tight_layout()
+        # plt.show()
+        #
+        # exit()
+
 
 class CategoricalNoiseScheduler(nn.Module):
     """

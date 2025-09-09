@@ -24,7 +24,7 @@ class ConditionalDiffusion(nn.Module):
     :param p_null: probability of dropping condition during training (for classifier-free guidance).
     """
 
-    def __init__(self, cnn_model, image_size, noise_scheduler, p_null=0.1):
+    def __init__(self, cnn_model, image_size, noise_scheduler, cond_scale=0.1):
         super().__init__()
         self._name = "ConditionalDiffusion"
 
@@ -34,7 +34,7 @@ class ConditionalDiffusion(nn.Module):
 
         # Probability to randomly drop conditions during training
         # (important for classifier-free guidance)
-        self.p_null = p_null
+        self.cond_scale = cond_scale
 
     # -------------------
     # Forward process (q)
@@ -74,8 +74,8 @@ class ConditionalDiffusion(nn.Module):
         x_noised = self.q_sample(data, t, noise=noise)
 
         # --- classifier-free guidance dropout ---
-        if self.training and self.p_null > 0:
-            drop_mask = torch.rand(batch_size, 1, device=cond.device) < self.p_null
+        if self.training and self.cond_scale > 0:
+            drop_mask = torch.rand(batch_size, 1, device=cond.device) < self.cond_scale
             cond = cond.clone()
             cond[drop_mask.squeeze()] = 0.0  # drop condition for subset of batch
 
@@ -115,6 +115,10 @@ class ConditionalDiffusion(nn.Module):
         # Predicted mean
         predicted_mean = sqrt_recip_alphas_t * (x - betas_t * preds / sqrt_one_minus_alphas_cumprod_t)
 
+        # predicted_mean = sqrt_recip_alphas_t * (
+        #         x - (1 - self.noise_scheduler.alphas[t]) * preds / sqrt_one_minus_alphas_cumprod_t
+        # )
+
         if debug:
             debug_tensor("betas_t", betas_t, step=t)
             debug_tensor("sqrt_recip_alphas_t", sqrt_recip_alphas_t, step=t)
@@ -124,6 +128,7 @@ class ConditionalDiffusion(nn.Module):
 
         # Final step → no extra noise
         if t == 0:
+            print("final step ")
             return predicted_mean
         else:
             posterior_variance = extract(self.noise_scheduler.posterior_variance, batched_t, x.shape)
@@ -143,6 +148,8 @@ class ConditionalDiffusion(nn.Module):
         cond = cond.to(samples.device)
 
         num_steps = getattr(self.noise_scheduler, "num_gen_timesteps", self.noise_scheduler.num_timesteps)
+
+        print("num steps ", num_steps)
 
         for t in reversed(range(num_steps)):
             samples = self.p_sample(samples, t, cond, cond_scale=cond_scale, debug=debug)

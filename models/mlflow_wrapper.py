@@ -29,9 +29,12 @@ class MLflowWrapper:
         if self.enabled:
             self.mlflow.log_params(params_dict)
 
-    def log_metric(self, key, value):
+    def log_metric(self, key, value, step=None):
         if self.enabled:
-            self.mlflow.log_metric(key, value)
+            if step is not None:
+                self.mlflow.log_metric(key, value, step=step)
+            else:
+                self.mlflow.log_metric(key, value)
 
     def log_artifacts(self, local_dir, artifact_path=None):
         if self.enabled:
@@ -52,14 +55,13 @@ class MLflowWrapper:
             self.mlflow.set_experiment(name)
 
     def get_logger(self, type="pytorch_lightning"):
-        from pytorch_lightning.loggers import MLFlowLogger
-        if self.enabled:
-            if type == "pytorch_lightning":
-                assert self.tracking_uri is not None, "Tracking URI is None - cannot initialize logger"
-                return MLFlowLogger(
-                    experiment_name=self.experiment_name,
-                    tracking_uri=self.tracking_uri)
-            else:
-                raise NotImplementedError("Only 'pytorch_ligthning' MLFlow logger is supported")
-        else:
+        if not self.enabled:
             return None
+
+        if type == "pytorch_lightning":
+            from pytorch_lightning.loggers import MLFlowLogger
+            assert self.tracking_uri is not None, "Tracking URI is None - cannot initialize logger"
+            return MLFlowLogger(
+                experiment_name=self.experiment_name,
+                tracking_uri=self.tracking_uri,
+            )
