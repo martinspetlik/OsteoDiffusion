@@ -17,6 +17,7 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from models.auxiliary_functions import get_loss_fn, forward_latent_transform
 from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
+from dataset.denoising_diffusion_latents.dataset_preprocessing import latents_prepare_dataset
 from dataset.denoising_diffusion_latents.latents_dataset import LatentsDataset
 from torch.utils.data import DataLoader
 from models.vqgan.vqgan_model import VQGAN
@@ -127,73 +128,7 @@ def train_one_epoch(
     train_loss = running_loss / (i + 1)
     return train_loss
 
-
-def build_latents_dataset(vqgan, dataset, save_dir, dset_type="train", device="cuda"):
-    """
-    Build a latent-space dataset using a trained VQGAN encoder.
-    Each sample is saved into a separate .npz file for efficient streaming.
-
-    :param vqgan: Pre-trained VQGAN model (with encoder + quantizer).
-    :param dataset: Original dataset of 3D CT volumes + conditions.
-    :param save_dir: Directory where latent datasets will be stored.
-    :param dset_type: Dataset split type ("train", "validation", "test").
-    :param device: Device to run computations on ("cuda" or "cpu").
-    """
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Directory for this dataset split
-    split_dir = os.path.join(save_dir, f"latents_dataset_{dset_type}")
-    os.makedirs(split_dir, exist_ok=True)
-
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-    vqgan.eval()
-    vqgan.to(device)
-
-    counter = 0
-    with torch.no_grad():
-        for i, (volume, conds) in enumerate(tqdm(loader)):
-            volume = volume.to(device).float()
-
-            if "train_on_codebooks" in config and config["train_on_codebooks"]:
-                # --- ALDM approach ---
-                h = vqgan.encoder(volume)
-                h = vqgan.quant_conv(h)
-                vqgan.quantize.sane_index_shape = True
-                z_q, loss, (_, _, codebook_indices) = vqgan.quantize(h)
-                model_input = z_q / z_q.flatten().std()
-
-            else:
-                # --- MedicalDiffusion approach ---
-                h = vqgan.encoder(volume)
-                h = vqgan.quant_conv(h)
-
-                model_input = forward_latent_transform(h, vqgan)
-
-                if not os.path.exists(os.path.join(save_dir, "quantize_embedings_min_max.npy")):
-                    np.save(
-                        os.path.join(save_dir, "quantize_embedings_min_max.npy"),
-                        (
-                            vqgan.quantize.embedding.weight.min().cpu().numpy(),
-                            vqgan.quantize.embedding.weight.max().cpu().numpy()
-                        )
-                    )
-
-            model_input_np = np.squeeze(model_input.cpu().numpy())
-            conds_np = torch.stack(conds, dim=1).cpu().numpy() if isinstance(conds, (list, tuple)) else conds.cpu().numpy()
-            conds_np = np.squeeze(conds_np)
-
-            # Save one sample per file
-            sample_path = os.path.join(split_dir, f"sample_{counter:04d}.npz")
-            np.savez_compressed(sample_path, latent=model_input_np, cond=conds_np)
-            counter += 1
-
-    print(f" Saved {counter} samples into {split_dir}")
-
-    return LatentsDataset(split_dir)
-
-
-def objective(trial, trials_config, mlf_wrapper):
+def objective(trial, trials_config, mlf_wrapper, load_existing=False):
     """
     Optuna objective function for training and evaluating a conditional diffusion model.
 
@@ -208,6 +143,7 @@ def objective(trial, trials_config, mlf_wrapper):
     :param trial: Optuna trial object for hyperparameter optimization.
     :param trials_config: dictionary of configuration options and search spaces.
     :param mlf_wrapper: MLFlow wrapper to log metrics and hyperparameters
+    :param load_existing: Flag, if True then load existing model
     :return: best validation loss (float).
     """
     # ------------------------
@@ -269,14 +205,13 @@ def objective(trial, trials_config, mlf_wrapper):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vqgan_model_checkpoint.to(device)
 
+
     # Build latent datasets
     latents_datasets_dir = os.path.join(output_dir, "latents_datasets")
-    latents_train_set = build_latents_dataset(vqgan_model_checkpoint, train_set, latents_datasets_dir,
-                                              dset_type="train", device="cuda")
-    latents_validation_set = build_latents_dataset(vqgan_model_checkpoint, validation_set, latents_datasets_dir,
-                                                   dset_type="validation", device="cuda")
-    latents_test_set = build_latents_dataset(vqgan_model_checkpoint, validation_set, latents_datasets_dir,
-                                             dset_type="test", device="cuda")
+    if "latents_datasets_dir" in trials_config:
+        latents_datasets_dir = trials_config["latents_datasets_dir"]
+
+    latents_train_set, latents_validation_set, latents_test_set = latents_prepare_dataset(study, config, (train_set, validation_set, test_set), vqgan_model_checkpoint=vqgan_model_checkpoint, latents_datasets_dir=latents_datasets_dir)
 
     # Replace loaders with latent space versions
     train_loader = torch.utils.data.DataLoader(latents_train_set, batch_size=config["batch_size_train"], shuffle=True)
@@ -329,10 +264,38 @@ def objective(trial, trials_config, mlf_wrapper):
     # ------------------------
     # EMA setup
     # ------------------------
-    ema_beta = trials_config.get("EMA_beta", 0.999)
-    ema = EMA(beta=ema_beta)
-    ema_model = copy.deepcopy(diff_model)
-    ema_model.eval()
+    ema = None
+    ema_model = None
+    if trials_config.get("use_ema", False):
+        ema_beta = trials_config.get("EMA_beta", 0.999)
+        ema = EMA(beta=ema_beta)
+        ema_model = copy.deepcopy(diff_model)
+        ema_model.eval()
+
+    # If loading an existing model checkpoint is requested
+    if load_existing:
+        # Load model file path if provided in config
+        if "model_file_path" in trials_config:
+            model_file_path = trials_config["model_file_path"]
+
+        # Ensure the model file exists
+        if not os.path.exists(model_file_path):
+            raise FileNotFoundError("Model file not found at path: {}".format(model_file_path))
+
+        # Load checkpoint from file
+        checkpoint = torch.load(model_file_path)
+        # Load model state dict from checkpoint
+        diff_model.load_state_dict(checkpoint['best_diff_model_state_dict'])
+        # Load model state dict from checkpoint
+        ema_model.load_state_dict(checkpoint['best_model_state_dict'])
+        # Load optimizer state dict from checkpoint
+        optimizer.load_state_dict(checkpoint['best_optimizer_state_dict'])
+        # Load scheduler state dict from checkpoint
+        scheduler.load_state_dict(checkpoint['best_scheduler_state_dict'])
+        # Load the epoch at which best model was saved
+        save_model_best_epoch = checkpoint['best_epoch']
+        # Initialize best validation loss from checkpoint history
+        best_vloss = np.min(checkpoint['valid_loss'])
 
     # ------------------------
     # Training loop
@@ -354,11 +317,15 @@ def objective(trial, trials_config, mlf_wrapper):
 
         # Validate (using EMA weights)
         diff_model.train(False)
-        avg_vloss, avg_vacc = validate(ema_model, validation_loader, loss_fn=loss_fn)
+        if ema_model is not None:
+            avg_vloss, avg_vacc = validate(ema_model, validation_loader, loss_fn=loss_fn)
+        else:
+            avg_vloss, avg_vacc = validate(diff_model, validation_loader, loss_fn=loss_fn)
 
         # Scheduler step
         if scheduler is not None:
             scheduler.step(avg_loss)
+            print("scheduler lr: {}".format(scheduler._last_lr))
 
         avg_loss_list.append(avg_loss)
         avg_vloss_list.append(avg_vloss)
@@ -374,7 +341,7 @@ def objective(trial, trials_config, mlf_wrapper):
         # Save best model
         if avg_vloss < best_vloss:
             best_vloss, best_epoch = avg_vloss, epoch
-            model_state_dict = ema_model.state_dict()
+            model_state_dict = ema_model.state_dict() if ema_model is not None else diff_model.state_dict()
             diff_model_state_dict = diff_model.state_dict()
             optimizer_state_dict = optimizer.state_dict() if optimizer else {}
 
@@ -468,6 +435,7 @@ if __name__ == '__main__':
         mlf_wrapper.set_tracking_uri(mlflow_config["tracking_uri"])
         mlf_wrapper.set_experiment(mlflow_config["experiment_name"])
         mlf_wrapper.log_params(trials_config)
+        mlf_wrapper.log_param("output_dir", output_dir)
 
     # --- Optuna trial count ---
     num_trials = trials_config["num_trials"]
@@ -499,12 +467,14 @@ if __name__ == '__main__':
         if trials_config["sampler_class"] == "BruteForceSampler":
             sampler = BruteForceSampler(seed=random_seed)
 
+    # Determine whether to load existing study based on append flag
+    load_existing = args.append
     # --- Create Optuna study ---
     study = optuna.create_study(sampler=sampler, direction="minimize")
 
     # --- Objective function wrapper ---
     def obj_func(trial):
-        return objective(trial, trials_config, mlf_wrapper=mlf_wrapper)
+        return objective(trial, trials_config, mlf_wrapper=mlf_wrapper,  load_existing=load_existing)
 
     # --- Run Optuna optimization ---
     study.optimize(obj_func, n_trials=num_trials)

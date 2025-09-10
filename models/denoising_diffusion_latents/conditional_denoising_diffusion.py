@@ -81,6 +81,7 @@ class ConditionalDiffusion(nn.Module):
 
         # Predict noise with conditional UNet
         predicted_noise = self.model(x_noised, t, cond)
+
         return noise, predicted_noise
 
     # -------------------
@@ -112,12 +113,12 @@ class ConditionalDiffusion(nn.Module):
             self.noise_scheduler.sqrt_one_minus_alphas_cumprod, batched_t, x.shape
         )
 
-        # Predicted mean
-        predicted_mean = sqrt_recip_alphas_t * (x - betas_t * preds / sqrt_one_minus_alphas_cumprod_t)
+        data = x.float()
 
-        # predicted_mean = sqrt_recip_alphas_t * (
-        #         x - (1 - self.noise_scheduler.alphas[t]) * preds / sqrt_one_minus_alphas_cumprod_t
-        # )
+        # Predicted mean
+        predicted_mean = sqrt_recip_alphas_t * (
+                data - betas_t * preds / sqrt_one_minus_alphas_cumprod_t
+        )
 
         if debug:
             debug_tensor("betas_t", betas_t, step=t)
@@ -132,10 +133,14 @@ class ConditionalDiffusion(nn.Module):
             return predicted_mean
         else:
             posterior_variance = extract(self.noise_scheduler.posterior_variance, batched_t, x.shape)
-            if debug:
-                debug_tensor("posterior_variance", posterior_variance, step=t)
+            # if debug:
+            #     debug_tensor("posterior_variance", posterior_variance, step=t)
+            # noise = torch.randn_like(x)
+            # return predicted_mean + torch.sqrt(posterior_variance) * noise
             noise = torch.randn_like(x)
-            return predicted_mean + torch.sqrt(posterior_variance) * noise
+            scaled_noise = torch.sqrt(posterior_variance) * noise
+            return predicted_mean + scaled_noise
+
 
     @torch.no_grad()
     def sample(self, batch_size, cond, cond_scale=1.0, debug=False):
