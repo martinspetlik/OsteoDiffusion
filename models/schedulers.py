@@ -3,14 +3,16 @@ import torch.nn as nn
 from torch.functional import F
 
 
-def linear_beta_schedule(timesteps: int) -> torch.Tensor:
+def linear_beta_schedule(timesteps: int, beta_start=None, beta_end=None) -> torch.Tensor:
     # Linearly increases beta from beta_start to beta_end over `timesteps`.
     # Beta controls the variance of Gaussian noise at each diffusion step.
     # Common choice in early diffusion models (e.g., DDPM).
 
     scale = 1000 / timesteps
-    beta_start = scale * 0.0001      # Starting small noise
-    beta_end = scale * 0.02          # Ending with larger noise
+    if beta_start is None:
+        beta_start = scale * 0.0001      # Starting small noise
+    if beta_end is None:
+        beta_end = scale * 0.02          # Ending with larger noise
     return torch.linspace(beta_start, beta_end, timesteps, dtype=torch.float64)
     # Returns: βₜ linearly spaced between β_start and β_end.
 
@@ -27,7 +29,7 @@ def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.Tensor:
 
     # Derive βₜ from ᾱₜ: βₜ = 1 - ᾱₜ / ᾱₜ₋₁
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0.0001, 0.9999)
+    return torch.clip(betas, 1e-4, 0.9999)
 
 
 def sigmoid_beta_schedule(
