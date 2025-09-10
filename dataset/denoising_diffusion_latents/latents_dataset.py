@@ -14,8 +14,6 @@ class LatentsDataset(Dataset):
         # collect all npz files in directory
         self.files = sorted(glob.glob(os.path.join(latents_dir, "*.npz")))
         self.transform = transform
-        if len(self.files) == 0:
-            raise ValueError(f"No .npz files found in {latents_dir}")
 
     def __len__(self):
         return len(self.files)
