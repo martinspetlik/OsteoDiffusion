@@ -63,7 +63,7 @@ def latents_prepare_dataset(study, config, vqgan_train_val_test_datasets, vqgan_
                                               dset_type="test", device="cuda")
 
     latents_train_loader = torch.utils.data.DataLoader(latents_train_set, batch_size=1, shuffle=False)
-    min_values, max_values = compute_data_min_max(latents_train_loader)
+    min_values, max_values = compute_data_min_max(latents_train_loader, num_channels=latents_train_set[0][0].shape[0])
 
     # Define transform pipeline
     transform = transforms.Compose([
