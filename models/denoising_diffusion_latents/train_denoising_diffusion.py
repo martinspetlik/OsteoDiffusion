@@ -192,19 +192,21 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
     # ------------------------
     # Load VQGAN for latent space
     # ------------------------
-    vqgan_study = joblib.load(os.path.join(trials_config["vqgan_results_dir"], "study.pkl"))
+    if "vqgan_trials_config" not in trials_config:
+        vqgan_study = joblib.load(os.path.join(trials_config["vqgan_results_dir"], "study.pkl"))
+        vqgan_model_config = vqgan_study.best_trial.params["model_config"]
+    else:
+        vqgan_model_config = load_trials_config(trials_config["vqgan_trials_config"])["model_config"][0]
+
     vqgan_model_path = trials_config.get(
         "vqgan_model_path",
         os.path.join(trials_config["vqgan_results_dir"], "logger/version_0/checkpoints/val/last.ckpt")
     )
-    vqgan_model_config = load_trials_config(trials_config["vqgan_trials_config"])["model_config"][0] \
-        if "vqgan_trials_config" in trials_config else vqgan_study.best_trial.params["model_config"]
-
+    
     vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path, **vqgan_model_config)
     vqgan_model_checkpoint.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vqgan_model_checkpoint.to(device)
-
 
     # Build latent datasets
     latents_datasets_dir = os.path.join(output_dir, "latents_datasets")
