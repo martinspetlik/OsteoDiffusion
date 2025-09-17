@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.functional import F
+from functools import partial
 
 
 def linear_beta_schedule(timesteps: int, beta_start=None, beta_end=None) -> torch.Tensor:
@@ -95,14 +96,16 @@ class NoiseScheduler(nn.Module):
         sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
         sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
 
+        to_torch = partial(torch.tensor, dtype=torch.float32)
+
         # --- Register all as buffers ---
-        self.register_buffer("betas", betas)
-        self.register_buffer("alphas", alphas)
-        self.register_buffer("alphas_cumprod", alphas_cumprod)
-        self.register_buffer("posterior_variance", posterior_variance)
-        self.register_buffer("sqrt_recip_alphas", sqrt_recip_alphas)
-        self.register_buffer("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
-        self.register_buffer("sqrt_one_minus_alphas_cumprod", sqrt_one_minus_alphas_cumprod)
+        self.register_buffer("betas", to_torch(betas))
+        self.register_buffer("alphas", to_torch(alphas))
+        self.register_buffer("alphas_cumprod", to_torch(alphas_cumprod))
+        self.register_buffer("posterior_variance", to_torch(posterior_variance))
+        self.register_buffer("sqrt_recip_alphas", to_torch(sqrt_recip_alphas))
+        self.register_buffer("sqrt_alphas_cumprod", to_torch(sqrt_alphas_cumprod))
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", to_torch(sqrt_one_minus_alphas_cumprod))
 
         # # --- Visualization for debugging ---
         # import matplotlib.pyplot as plt
