@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 from models.auxiliary_functions import extract
+from torch.functional import F
 
 
 def debug_tensor(name, t, step=None):
@@ -22,6 +23,30 @@ class ConditionalDiffusion(nn.Module):
     :param image_size: tuple of input shape (C, D, H, W) or (C, H, W).
     :param noise_scheduler: diffusion noise scheduler containing betas, alphas, etc.
     :param p_null: probability of dropping condition during training (for classifier-free guidance).
+
+    -------------------
+    Theoretical background
+    -------------------
+    Diffusion models define two stochastic processes:
+
+    1. Forward process (q): progressively add Gaussian noise to a clean sample x₀
+       until it becomes pure noise x_T.
+
+       Formula:
+         q(x_t | x₀) = N(x_t ; sqrt(α̅_t) * x₀ , (1 - α̅_t) I)
+
+       where:
+         - α_t = 1 - β_t
+         - α̅_t = ∏_{s=1}^t α_s (cumulative product of noise factors)
+         - β_t are variance schedule values.
+
+    2. Reverse process (p): train a neural network ε_θ(x_t, t, cond) to predict the noise,
+       so we can invert the process.
+
+       Formula:
+         p_θ(x_{t-1} | x_t) = N(x_{t-1}; μ_θ(x_t, t), Σ_θ(x_t, t))
+
+       where μ_θ depends on ε_θ and the diffusion equations.
     """
 
     def __init__(self, cnn_model, image_size, noise_scheduler, cond_scale=0.1):
@@ -33,8 +58,10 @@ class ConditionalDiffusion(nn.Module):
         self.noise_scheduler = noise_scheduler
 
         # Probability to randomly drop conditions during training
-        # (important for classifier-free guidance)
+        # (important for classifier-free guidance, so the model learns unconditional too)
         self.cond_scale = cond_scale
+        #self.parameterization = "x0" #"eps"
+        self.log_every_t = 10
 
     # -------------------
     # Forward process (q)
@@ -43,9 +70,13 @@ class ConditionalDiffusion(nn.Module):
         """
         Diffusion forward process: add noise to clean input x_start at timestep t.
 
+        Formula:
+        --------
+        q(x_t | x₀) = sqrt(α̅_t) * x₀ + sqrt(1 - α̅_t) * ε
+
         :param x_start: clean input sample.
         :param t: timestep indices (batch,).
-        :param noise: Gaussian noise tensor.
+        :param noise: Gaussian noise tensor ε ~ N(0, I).
         :return: x_t (noised sample).
         """
         sqrt_alphas_cumprod_t = extract(self.noise_scheduler.sqrt_alphas_cumprod, t, x_start.shape)
@@ -58,10 +89,16 @@ class ConditionalDiffusion(nn.Module):
         """
         Training forward pass: generates noisy data and predicts noise.
 
+        Steps:
+        1. Sample random timestep t ~ Uniform(0, T).
+        2. Add Gaussian noise to the clean sample: x_t = q(x_t | x₀).
+        3. Randomly drop conditioning vector (classifier-free guidance trick).
+        4. Predict noise ε_θ(x_t, t, cond) with CNN backbone.
+
         :param data: clean input (batch, C, ...).
         :param cond: conditioning vector (batch, cond_dim).
         :param noise: optional noise (if None, random Gaussian is used).
-        :return: (true_noise, predicted_noise).
+        :return: (true_noise ε, predicted_noise ε_θ).
         """
         batch_size = data.shape[0]
         if noise is None:
@@ -84,82 +121,148 @@ class ConditionalDiffusion(nn.Module):
 
         return noise, predicted_noise
 
-    # -------------------
-    # Reverse process (p)
-    # -------------------
-    def p_sample(self, x, t, cond, cond_scale=1.0, debug=False):
+    def noise_like(self, shape, device, repeat=False):
         """
-        Single reverse diffusion step p(x_{t-1} | x_t).
+        Utility: generate Gaussian noise with given shape.
+        If repeat=True → use same noise vector for batch.
         """
-        b, *_, device = *x.shape, x.device
-        batched_t = torch.full((b,), t, device=device, dtype=torch.long)
-
-        cond = cond.to(device)
-
-        # Conditional prediction
-        pred_cond = self.model(x, batched_t, cond)
-
-        if cond_scale != 1.0:
-            # Classifier-free guidance
-            pred_uncond = self.model(x, batched_t, torch.zeros_like(cond))
-            preds = pred_uncond + cond_scale * (pred_cond - pred_uncond)
-        else:
-            preds = pred_cond
-
-        # Scheduler params
-        betas_t = extract(self.noise_scheduler.betas, batched_t, x.shape)
-        sqrt_recip_alphas_t = extract(self.noise_scheduler.sqrt_recip_alphas, batched_t, x.shape)
-        sqrt_one_minus_alphas_cumprod_t = extract(
-            self.noise_scheduler.sqrt_one_minus_alphas_cumprod, batched_t, x.shape
+        repeat_noise = lambda: torch.randn((1, *shape[1:]), device=device).repeat(
+            shape[0], *((1,) * (len(shape) - 1))
         )
+        noise = lambda: torch.randn(shape, device=device)
+        return repeat_noise() if repeat else noise()
 
-        data = x.float()
+    def q_posterior(self, x_start, x_t, t):
+        """
+        Compute the true DDPM posterior q(x_{t-1} | x_t, x₀).
+        Returns (posterior_mean, posterior_variance, posterior_log_variance_clipped).
 
-        # Predicted mean
-        predicted_mean = sqrt_recip_alphas_t * (
-                data - betas_t * preds / sqrt_one_minus_alphas_cumprod_t
+        Formula:
+        --------
+        q(x_{t-1} | x_t, x₀) = N(x_{t-1} ; μ_t(x_t, x₀), β̃_t I)
+
+        where:
+          μ_t = (√α̅_{t-1} β_t / (1-α̅_t)) * x₀ + (√α_t (1-α̅_{t-1}) / (1-α̅_t)) * x_t
+          β̃_t = (1-α̅_{t-1})/(1-α̅_t) * β_t   (posterior variance)
+        """
+        # alphas, alphas_cumprod, betas are 1D tensors in scheduler
+        # extract per-batch broadcastable versions
+        betas_t = extract(self.noise_scheduler.betas, t, x_t.shape)  # beta_t
+        alphas_t = extract(1.0 - self.noise_scheduler.betas, t, x_t.shape)  # alpha_t
+        alphas_cumprod_t = extract(self.noise_scheduler.alphas_cumprod, t, x_t.shape)  # alpha_bar_t
+
+        # compute alpha_bar_{t-1} by padding alphas_cumprod (on the fly)
+        # scheduler.alphas_cumprod is 1D; create alphas_cumprod_prev 1D then extract
+        alphas_cumprod_1d = self.noise_scheduler.alphas_cumprod
+        alphas_cumprod_prev_1d = F.pad(alphas_cumprod_1d[:-1], (1, 0), value=1.0)
+        alphas_cumprod_prev_t = extract(alphas_cumprod_prev_1d, t, x_t.shape)
+
+        # posterior mean coefficients (DDPM textbook)
+        coef1 = (betas_t * torch.sqrt(alphas_cumprod_prev_t)) / (1.0 - alphas_cumprod_t + 1e-12)
+        coef2 = (torch.sqrt(alphas_t) * (1.0 - alphas_cumprod_prev_t)) / (1.0 - alphas_cumprod_t + 1e-12)
+
+        posterior_mean = coef1 * x_start + coef2 * x_t
+
+        posterior_variance = extract(self.noise_scheduler.posterior_variance, t, x_t.shape)
+        # numerical stable log var
+        posterior_log_variance_clipped = torch.log(torch.clamp(posterior_variance, min=1e-20))
+
+        return posterior_mean, posterior_variance, posterior_log_variance_clipped
+
+    def predict_start_from_noise(self, x_t, t, noise):
+        """
+        Recover x₀ from x_t and predicted noise ε.
+
+        Formula:
+        --------
+          x₀ = (x_t - sqrt(1 - α̅_t) * ε) / sqrt(α̅_t)
+
+        Note: use scheduler.sqrt_alphas_cumprod (which is sqrt(α̅_t)).
+        """
+        sqrt_alpha_bar_t = extract(self.noise_scheduler.sqrt_alphas_cumprod, t, x_t.shape)
+        sqrt_one_minus_alpha_bar_t = extract(self.noise_scheduler.sqrt_one_minus_alphas_cumprod, t, x_t.shape)
+
+        # x0 = (x_t - sqrt(1 - alpha_bar) * eps) / sqrt(alpha_bar)
+        x0_pred = (x_t - sqrt_one_minus_alpha_bar_t * noise) / (sqrt_alpha_bar_t + 1e-12)
+        return x0_pred
+
+    def p_mean_variance(self, x_t, t, clip_denoised: bool):
+        """
+        Compute model mean & variance for p(x_{t-1} | x_t).
+
+        Steps:
+        1. Model predicts ε_θ(x_t, t).
+        2. Reconstruct x₀_pred from noise prediction.
+        3. Use q_posterior formula to get mean/variance/log-variance.
+
+        :param clip_denoised: whether to clamp x₀_pred to [-1, 1] for stability.
+        """
+        # model should return eps prediction for shape x_t
+        eps_pred = self.model(x_t, t)  # if your model signature is different adapt
+        # recover x0
+        x0_pred = self.predict_start_from_noise(x_t, t, eps_pred)
+
+        if clip_denoised:
+            x0_pred = x0_pred.clamp(-1.0, 1.0)
+
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
+            x_start=x0_pred, x_t=x_t, t=t
         )
-
-        if debug:
-            debug_tensor("betas_t", betas_t, step=t)
-            debug_tensor("sqrt_recip_alphas_t", sqrt_recip_alphas_t, step=t)
-            debug_tensor("sqrt_one_minus_alphas_cumprod_t", sqrt_one_minus_alphas_cumprod_t, step=t)
-            debug_tensor("preds", preds, step=t)
-            debug_tensor("predicted_mean", predicted_mean, step=t)
-
-        # Final step → no extra noise
-        if t == 0:
-            print("final step ")
-            return predicted_mean
-        else:
-            posterior_variance = extract(self.noise_scheduler.posterior_variance, batched_t, x.shape)
-            # if debug:
-            #     debug_tensor("posterior_variance", posterior_variance, step=t)
-            # noise = torch.randn_like(x)
-            # return predicted_mean + torch.sqrt(posterior_variance) * noise
-            noise = torch.randn_like(x)
-            scaled_noise = torch.sqrt(posterior_variance) * noise
-            return predicted_mean + scaled_noise
-
+        return model_mean, posterior_variance, posterior_log_variance
 
     @torch.no_grad()
-    def sample(self, batch_size, cond, cond_scale=1.0, debug=False):
+    def p_sample(self, x_t, t, clip_denoised=True, repeat_noise=False, deterministic=False):
         """
-        Generate samples by iteratively denoising from pure noise.
+        One reverse step:
+         - deterministic=False: stochastic DDPM step with posterior variance
+         - deterministic=True: return posterior mean (no added noise)  (useful to inspect)
+
+        Formula:
+        --------
+        x_{t-1} = μ_θ(x_t, t) + σ_t * z,   z ~ N(0, I)
+        (unless t=0, then no noise is added)
         """
-        shape = (batch_size, *self.image_size)
-        samples = torch.randn(shape, device=cond.device)
+        b, *_, device = *x_t.shape, x_t.device
+        model_mean, posterior_variance, posterior_log_variance = self.p_mean_variance(
+            x_t=x_t, t=t, clip_denoised=clip_denoised
+        )
 
-        cond = cond.to(samples.device)
+        if deterministic:
+            return model_mean
+        else:
+            noise = self.noise_like(x_t.shape, device, repeat=repeat_noise)
+            # when t == 0 we should not add noise (nonzero_mask = 0 for t==0)
+            nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x_t.shape) - 1))).to(device)
+            return model_mean + nonzero_mask * torch.sqrt(posterior_variance) * noise
 
-        num_steps = getattr(self.noise_scheduler, "num_gen_timesteps", self.noise_scheduler.num_timesteps)
+    @torch.no_grad()
+    def sample(self, batch_size, image_size, return_intermediates=False, clip_denoised=False, deterministic=False):
+        """
+        Full sampling loop using reverse steps. Uses scheduler.num_timesteps and sampler p_sample above.
 
-        print("num steps ", num_steps)
+        Steps:
+        -------
+        1. Start from Gaussian noise x_T ~ N(0, I).
+        2. Iteratively denoise: for t = T ... 1
+             x_{t-1} ~ p_θ(x_{t-1} | x_t).
+        3. Optionally return intermediates for visualization.
 
-        for t in reversed(range(num_steps)):
-            samples = self.p_sample(samples, t, cond, cond_scale=cond_scale, debug=debug)
+        Output: final generated sample x₀.
+        """
+        device = next(self.model.parameters()).device
+        img = torch.randn(batch_size, *image_size, device=device, dtype=torch.float32)
+        intermediates = [img.clone()]
 
-            if debug and (t % max(1, num_steps // 10) == 0):
-                debug_tensor("samples", samples, step=t)
+        T = int(self.noise_scheduler.num_timesteps)
+        for i in tqdm(reversed(range(0, T)), desc='Sampling t', total=T):
+            t_tensor = torch.full((batch_size,), i, device=device, dtype=torch.long)
+            img = self.p_sample(img, t_tensor, clip_denoised=clip_denoised, repeat_noise=False,
+                                deterministic=deterministic)
+            # debug print
+            print(f"[t={i}] img min {img.min().item():.6f}, max {img.max().item():.6f}, std {img.std().item():.6f}")
+            if (i % max(1, T // 10)) == 0 or i == T - 1:
+                intermediates.append(img.clone())
 
-        return samples
+        if return_intermediates:
+            return img, intermediates
+        return img

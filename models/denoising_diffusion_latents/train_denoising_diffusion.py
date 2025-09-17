@@ -202,7 +202,7 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
         "vqgan_model_path",
         os.path.join(trials_config["vqgan_results_dir"], "logger/version_0/checkpoints/val/last.ckpt")
     )
-    
+
     vqgan_model_checkpoint = VQGAN.load_from_checkpoint(vqgan_model_path, **vqgan_model_config)
     vqgan_model_checkpoint.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -303,7 +303,7 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
     # Training loop
     # ------------------------
     start_time = time.time()
-    avg_loss_list, avg_vloss_list = [], []
+    avg_loss_list, avg_vloss_list, avg_vacc_list = [], [], []
 
     for epoch in range(config["num_epochs"]):
         # Train
@@ -331,6 +331,7 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
 
         avg_loss_list.append(avg_loss)
         avg_vloss_list.append(avg_vloss)
+        avg_vacc_list.append(avg_vacc)
 
         # Log to MLflow
         if mlf_wrapper is not None:
@@ -356,6 +357,7 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
                 'best_scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'train_loss': avg_loss_list,
                 'valid_loss': avg_vloss_list,
+                'valid_acc': avg_vacc_list,
                 'training_time': time.time() - start_time,
             }, model_path_epoch)
 
@@ -372,6 +374,7 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
         'best_scheduler_state_dict': scheduler.state_dict() if scheduler else None,
         'train_loss': avg_loss_list,
         'valid_loss': avg_vloss_list,
+        'valid_acc': avg_vacc_list,
         'training_time': time.time() - start_time,
     }, model_path)
 
