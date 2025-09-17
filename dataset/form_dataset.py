@@ -3,13 +3,17 @@ import sys
 import glob
 import ants
 import argparse
+import shutil
 import numpy as np
 
 
 def form_dataset(database, dataset_dir):
     # Path to segmentation-derived data inside the BoneDat database
     data_dir_path = os.path.join(database, "derived/segmentation")
+    # Path to metadata (sex, age) information
+    metadata_dir_path = os.path.join(database, "raw")
     data_file_name = "masked.nii.gz"  # CT scan masked with pelvic segmentation
+    metadata_file_name = "metadata.xlsx"  # Contains patient ID, year of birth, sex, and CT date
 
     # Global intensity clipping range (based on dataset analysis)
     # -1024 is typical air HU in CT, 1650 chosen as a reasonable upper bound for bone
@@ -65,15 +69,25 @@ def form_dataset(database, dataset_dir):
             np.max(resampled_img_normalized_global_data))
         )
 
+        dataset_sample_dir = os.path.join(dataset_dir, sample_dir_name)
         # Create patient/sample directory inside dataset output folder
-        if not os.path.exists(os.path.join(dataset_dir, sample_dir_name)):
-            os.mkdir(os.path.join(dataset_dir, sample_dir_name))
+        if not os.path.exists(dataset_sample_dir):
+            os.mkdir(dataset_sample_dir)
 
         # Save processed scan as compressed NumPy archive
         np.savez_compressed(
-            os.path.join(os.path.join(dataset_dir, sample_dir_name), saved_data_file),
+            os.path.join(dataset_sample_dir, saved_data_file),
             data=resampled_img_normalized_global_data
         )
+
+        # Path to metadata file
+        metadata_file = os.path.join(os.path.join(metadata_dir_path, sample_dir_name), metadata_file_name)
+
+        # Copy metadata file into dataset_sample_dir
+        if os.path.exists(metadata_file):  # make sure file exists
+            shutil.copy(metadata_file, dataset_sample_dir)
+        else:
+            print(f"Warning: Metadata file not found for {sample_dir_name}")
 
 
 # =========================================================
