@@ -5,12 +5,6 @@ from models.auxiliary_functions import extract
 from torch.functional import F
 
 
-def debug_tensor(name, t, step=None):
-    """Helper: print stats for a tensor (min/max/mean)"""
-    if isinstance(t, torch.Tensor):
-        print(f"[{step}] {name}: min={t.min().item():.4f}, max={t.max().item():.4f}, mean={t.mean().item():.4f}")
-
-
 class ConditionalDiffusion(nn.Module):
     """
     Conditional Denoising Diffusion model with classifier-free guidance.
