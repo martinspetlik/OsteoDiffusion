@@ -401,15 +401,3 @@ class VQGAN(pl.LightningModule):
         print(f"Loaded generator weights from {ckpt_path}")
         print(f"Missing keys: {missing}")
         print(f"Unexpected keys: {unexpected}")
-
-    # def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-    #     if batch_idx >= self.max_batches:
-    #         return
-    #
-    #     x, _ = batch  # assuming (x, y)
-    #     x = x.detach().cpu().numpy()
-    #     y_hat = outputs.detach().cpu().numpy() if isinstance(outputs, torch.Tensor) else outputs['pred'].detach().cpu().numpy()
-    #
-    #     np.save(os.path.join(self.save_dir, f"epoch{trainer.current_epoch}_batch{batch_idx}_input.npy"), x)
-    #     np.save(os.path.join(self.save_dir, f"epoch{trainer.current_epoch}_batch{batch_idx}_output.npy"), y_hat)
-

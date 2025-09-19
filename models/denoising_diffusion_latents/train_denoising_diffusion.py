@@ -11,14 +11,12 @@ from optuna.trial import TrialState
 from optuna.samplers import TPESampler, BruteForceSampler
 import time
 import yaml
-from tqdm import tqdm
 import numpy as np
 import torch.optim as optim
 from torch.optim import lr_scheduler
-from models.auxiliary_functions import get_loss_fn, forward_latent_transform
+from models.auxiliary_functions import get_loss_fn
 from dataset.cnn_diffusion.dataset_preprocessing import prepare_dataset
 from dataset.denoising_diffusion_latents.dataset_preprocessing import latents_prepare_dataset
-from dataset.denoising_diffusion_latents.latents_dataset import LatentsDataset
 from torch.utils.data import DataLoader
 from models.vqgan.vqgan_model import VQGAN
 from models.denoising_diffusion_latents.conditional_denoising_diffusion import ConditionalDiffusion
@@ -459,8 +457,8 @@ if __name__ == '__main__':
     # --- Output directory handling ---
     output_dir = os.path.join(output_dir, f"seed_{random_seed}")
     if os.path.exists(output_dir) and not args.append:
-        #shutil.rmtree(output_dir)  # overwrite previous results
-        raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
+        shutil.rmtree(output_dir)  # overwrite previous results
+        #raise IsADirectoryError("Results output dir {} already exists".format(output_dir))
     if not args.append:
         os.mkdir(output_dir)
     elif not os.path.exists(output_dir):

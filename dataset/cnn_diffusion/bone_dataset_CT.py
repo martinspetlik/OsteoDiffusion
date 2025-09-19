@@ -8,20 +8,25 @@ import pandas as pd
 
 
 class BoneDatasetCT(Dataset):
-    def __init__(self, data_dir, data_file_name=None, input_transform=None, metadata_file_name="metadata.xlsx"):
+    def __init__(self, data_dir, data_file_name=None, input_transform=None, metadata_dir=None, metadata_file_name="metadata.xlsx"):
+        self.data_dir = data_dir
 
-        self.data_dir = data_dir #
+        if metadata_dir is None:
+            metadata_dir = self.data_dir
+        self.metadata_dir = metadata_dir
 
-        #self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
-        self.metadata_dir = data_dir #"/mnt/database/BoneDat/raw"
+        self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
+        #self.metadata_dir = data_dir #"/mnt/database/BoneDat/raw"
+        self.metadata_dir = "/mnt/database/BoneDat/raw"
+        #
+        # self.data_dir = "/test_database"
+        # self.metadata_dir = "/test_database"
 
         if not os.path.exists(self.data_dir):
             raise NotADirectoryError
 
-        self._data_file_name = data_file_name #"lumbopelvic_masked_normed_local_resampled_32_32_32.npz"
+        self._data_file_name = data_file_name
         self._metadata_file_name = metadata_file_name
-
-        #self._data_file_name = "lumbopelvic_masked_normed_global_clip_resampled_32_32_32.npz"
 
         # Values for postprocessing
         self._global_min_value = -1024.00
@@ -59,10 +64,12 @@ class BoneDatasetCT(Dataset):
         metadata_dict = pd.read_excel(metadata_file, engine="openpyxl").iloc[0].to_dict()
         return {"sex": metadata_dict["sex"], "age": metadata_dict['CT date'] - metadata_dict['born']}
 
+
     def __getitem__(self, idx):
         #print("idx ", idx)
         image_path = self._image_file_paths[idx]
         metadata_path = self._metadata_file_paths[idx]
+
         #print("image path ", image_path)
         if isinstance(image_path, (list, np.ndarray)):
             new_dataset = copy.deepcopy(self)
@@ -91,4 +98,22 @@ class BoneDatasetCT(Dataset):
             print("idx ", idx)
             #shutil.rmtree(os.path.dirname(file))
             # raise ValueError(str_err)
+
+    @staticmethod
+    def remap_subset_paths(subset):
+        if os.path.exists("/scratch/project_465002075/bones_dataset"):
+            root = "/scratch/project_465002075/bones_dataset"
+        else:
+            root = "/home/martin/Documents/Bones_diff_model/test_database"
+
+        ds = subset.dataset
+        for idx in subset.indices:
+            img = ds._image_file_paths[idx]
+            meta = ds._metadata_file_paths[idx]
+
+            rel_img = os.path.basename(os.path.dirname(img)) + "/" + os.path.basename(img)
+            rel_meta = os.path.basename(os.path.dirname(meta)) + "/" + os.path.basename(meta)
+
+            ds._image_file_paths[idx] = os.path.join(root, rel_img)
+            ds._metadata_file_paths[idx] = os.path.join(root, rel_meta)
 

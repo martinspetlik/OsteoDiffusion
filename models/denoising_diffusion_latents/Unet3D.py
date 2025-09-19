@@ -1,4 +1,5 @@
-"Largely taken and adapted from https://github.com/FirasGit/medicaldiffusion/blob/master/ddpm/diffusion.py, which was build on https://github.com/lucidrains/video-diffusion-pytorch"
+# Largely taken and adapted from
+# https://github.com/FirasGit/medicaldiffusion/blob/master/ddpm/diffusion.py, which was build on https://github.com/lucidrains/video-diffusion-pytorch"
 import math
 import torch
 from torch import nn, einsum
@@ -7,19 +8,39 @@ from einops import rearrange
 from einops_exts import check_shape, rearrange_many
 from rotary_embedding_torch import RotaryEmbedding
 
+# ---------------------------
+# Utility functions
+# ---------------------------
+
 def exists(x):
+    """Check if a variable is not None."""
     return x is not None
 
+
 def is_odd(n):
+    """Return True if a number is odd."""
     return (n % 2) == 1
 
+
 def default(val, d):
+    """
+    Return val if it exists, otherwise return default d.
+    If d is a callable, call it and return its result.
+    """
     if exists(val):
         return val
     return d() if callable(d) else d
 
 
+# ---------------------------
+# Core building blocks
+# ---------------------------
+
 class Residual(nn.Module):
+    """
+    Wraps a function (fn) with a residual connection.
+    Output = fn(x) + x
+    """
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
@@ -29,6 +50,10 @@ class Residual(nn.Module):
 
 
 class SinusoidalPosEmb(nn.Module):
+    """
+    Creates sinusoidal positional embeddings.
+    Useful for injecting position or time information into the network.
+    """
     def __init__(self, dim):
         super().__init__()
         self.dim = dim
@@ -36,12 +61,19 @@ class SinusoidalPosEmb(nn.Module):
     def forward(self, x):
         device = x.device
         half_dim = self.dim // 2
+        # Compute frequencies using log scale
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        # Outer product between input and frequencies
         emb = x[:, None] * emb[None, :]
+        # Concatenate sin and cos embeddings
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
 
+
+# ---------------------------
+# Upsampling and downsampling layers
+# ---------------------------
 
 # def Upsample(dim):
 #     return nn.ConvTranspose3d(dim, dim, (1, 4, 4), (1, 2, 2), (0, 1, 1))
@@ -51,27 +83,41 @@ class SinusoidalPosEmb(nn.Module):
 #     return nn.Conv3d(dim, dim, (1, 4, 4), (1, 2, 2), (0, 1, 1))
 
 def Upsample(dim):
+    """3D transposed convolution for upsampling (in time and space)."""
     return nn.ConvTranspose3d(dim, dim, (2, 4, 4), (2, 2, 2), (0, 1, 1))
 
-
 def Downsample(dim):
+    """3D convolution for downsampling (in time and space)."""
     return nn.Conv3d(dim, dim, (2, 4, 4), (2, 2, 2), (0, 1, 1))
 
 
+# ---------------------------
+# Normalization layers
+# ---------------------------
 
 class LayerNorm(nn.Module):
+    """
+    Custom LayerNorm for 3D feature maps.
+    Normalizes across channels with learnable scale gamma.
+    """
     def __init__(self, dim, eps=1e-5):
         super().__init__()
         self.eps = eps
+        # Learnable scaling parameter, one per channel
         self.gamma = nn.Parameter(torch.ones(1, dim, 1, 1, 1))
 
     def forward(self, x):
+        # Compute mean and variance across channels
         var = torch.var(x, dim=1, unbiased=False, keepdim=True)
         mean = torch.mean(x, dim=1, keepdim=True)
+        # Normalize and scale
         return (x - mean) / (var + self.eps).sqrt() * self.gamma
 
 
 class PreNorm(nn.Module):
+    """
+    Apply LayerNorm before passing input through a function.
+    """
     def __init__(self, dim, fn):
         super().__init__()
         self.fn = fn
@@ -81,10 +127,16 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
-# building block modules
 
+# ---------------------------
+# Convolutional blocks
+# ---------------------------
 
 class Block(nn.Module):
+    """
+    Basic convolutional block:
+    Conv3D -> GroupNorm -> optional scale/shift -> SiLU activation.
+    """
     def __init__(self, dim, dim_out, groups=8):
         super().__init__()
         self.proj = nn.Conv3d(dim, dim_out, (1, 3, 3), padding=(0, 1, 1))
@@ -95,6 +147,7 @@ class Block(nn.Module):
         x = self.proj(x)
         x = self.norm(x)
 
+        # Apply FiLM-like conditioning if scale/shift is given
         if exists(scale_shift):
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
@@ -103,8 +156,14 @@ class Block(nn.Module):
 
 
 class ResnetBlock(nn.Module):
+    """
+    ResNet-style block with optional time embedding conditioning.
+    Two Block layers + skip connection.
+    If time_emb_dim is provided, generates scale/shift from time embedding.
+    """
     def __init__(self, dim, dim_out, *, time_emb_dim=None, groups=8):
         super().__init__()
+        # If time embedding exists, project it to scale and shift
         self.mlp = nn.Sequential(
             nn.SiLU(),
             nn.Linear(time_emb_dim, dim_out * 2)
@@ -112,24 +171,23 @@ class ResnetBlock(nn.Module):
 
         self.block1 = Block(dim, dim_out, groups=groups)
         self.block2 = Block(dim_out, dim_out, groups=groups)
-        self.res_conv = nn.Conv3d(
-            dim, dim_out, 1) if dim != dim_out else nn.Identity()
+        # 1x1 conv if input/output channels differ
+        self.res_conv = nn.Conv3d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
     def forward(self, x, time_emb=None):
-        # print("time emb ", time_emb)
-        # print("exists(self.mlp) ", exists(self.mlp))
         scale_shift = None
         if exists(self.mlp):
-            assert exists(time_emb), 'time emb must be passed in'
+            assert exists(time_emb), 'time embedding must be passed in'
+            # Project time embedding to scale and shift
             time_emb = self.mlp(time_emb)
             time_emb = rearrange(time_emb, 'b c -> b c 1 1 1')
-
             scale_shift = time_emb.chunk(2, dim=1)
-            # print("scale shift ", scale_shift)
-            # exit()
 
+        # Two convolutional blocks with optional FiLM conditioning
         h = self.block1(x, scale_shift=scale_shift)
         h = self.block2(h)
+
+        # Add residual connection
         return h + self.res_conv(x)
 
 
