@@ -15,12 +15,15 @@ class BoneDatasetCT(Dataset):
             metadata_dir = self.data_dir
         self.metadata_dir = metadata_dir
 
-        self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
+        #self.data_dir = "/mnt/database/BoneDat/derived/fields" #"/mnt/database/BoneDat/derived/fields"
         #self.metadata_dir = data_dir #"/mnt/database/BoneDat/raw"
-        self.metadata_dir = "/mnt/database/BoneDat/raw"
+        #self.metadata_dir = "/mnt/database/BoneDat/raw"
         #
-        # self.data_dir = "/test_database"
-        # self.metadata_dir = "/test_database"
+        #self.data_dir = "/test_database"
+        #self.metadata_dir = "/test_database"
+
+        #self.data_dir = "/home/martin/Documents/Bones_diff_model/data/bones_dataset_subset"
+        #self.metadata_dir = "/home/martin/Documents/Bones_diff_model/data/bones_dataset_subset"
 
         if not os.path.exists(self.data_dir):
             raise NotADirectoryError
