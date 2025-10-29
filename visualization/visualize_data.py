@@ -1,6 +1,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+def plot_hist_orig_generated(orig_sample, generated_sample, title="Histogram", bins=100):
+    """
+    Plots histogram of values inside a PyTorch tensor.
+    """
+    plt.figure(figsize=(6, 4))
+    plt.hist(orig_sample.flatten(), bins=bins, color='blue', density=True, alpha=0.99)
+    plt.hist(generated_sample.flatten(), bins=bins, color='red', density=True, alpha=0.5)
+    plt.title(title)
+    plt.xlabel("Value")
+    plt.ylabel("Frequency")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.show()
+
 def plot_hist(sample, title="Histogram", bins=100):
     """
     Plots histogram of values inside a PyTorch tensor.
@@ -15,13 +29,15 @@ def plot_hist(sample, title="Histogram", bins=100):
     plt.show()
 
 
-def plot_train_valid_loss(train_loss, valid_loss=None, y_label="", log=False):
+def plot_train_valid_loss(train_loss, valid_loss=None, y_label="", log=False, line_value=None):
     plt.plot(train_loss, label="train loss")
     if valid_loss is not None:
         plt.plot(valid_loss, label="valid loss")
     if log:
         plt.yscale("log")
     #plt.ylim([0, np.min([10000, np.max(train_loss), np.max(valid_loss)])])
+    if line_value is not None:
+        plt.axhline(y=line_value, color='r', linestyle='-')
     plt.xlabel("epochs")
     plt.ylabel(y_label)
     plt.legend()
@@ -30,7 +46,7 @@ def plot_train_valid_loss(train_loss, valid_loss=None, y_label="", log=False):
     plt.show()
 
 
-def render_3d_scan(scan, title="3D Scan", fig_name=""):
+def render_3d_scan(scan, title="3D Scan", fig_name=None):
     from mayavi import mlab
     # Create a Mayavi figure
     mlab.figure(size=(800, 800), bgcolor=(1, 1, 1))
@@ -41,13 +57,29 @@ def render_3d_scan(scan, title="3D Scan", fig_name=""):
     volume = mlab.pipeline.volume(src)
     volume._volume_property.scalar_opacity_unit_distance = 0.1
     #mlab.title(f'3D Feature Map from Layer: {layer}, Feature: {feature_index}')
-    colorbar = mlab.colorbar(title="Intensity", orientation="vertical")
-    colorbar.label_text_property.font_size = 12  # Adjust font size of numbers
+
+    # Add colorbar linked to volume
+    cb = mlab.colorbar(object=volume, orientation='vertical')
+
+    # Access the scalar bar actor to set title and font properties
+    lut_manager = volume.module_manager.scalar_lut_manager
+    scalar_bar = lut_manager.scalar_bar
+
+    scalar_bar.title = "Intensity"  # Properly sets colorbar title
+    scalar_bar.component_title = ""  # Optional: clear any component label
+    scalar_bar.title_text_property.font_size = 14
+    scalar_bar.label_text_property.font_size = 10
+    scalar_bar.label_text_property.color = (0, 0, 0)
+    scalar_bar.title_text_property.color = (0, 0, 0)
+
+    # colorbar = mlab.colorbar(title="Intensity", orientation="vertical")
+    # colorbar.label_text_property.font_size = 12  # Adjust font size of numbers
 
     # Add a title (overlay in scene)
     mlab.title(title, size=0.5, height=0.95)
 
-    mlab.savefig(fig_name)
+    if fig_name is None:
+        mlab.savefig(fig_name)
     mlab.show()
 
 
