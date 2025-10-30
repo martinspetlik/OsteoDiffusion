@@ -1,0 +1,5 @@
+results_dir: "OsteoDiffusion/optuna_runs/vqgan/test_result"
+model_path: "OsteoDiffusion/optuna_runs/vqgan/test_result/logger/version_0/checkpoints/val/last.ckpt"
+vqgan_train_config: "OsteoDiffusion/configs/vqgan/test_vqgan_config.yaml"
+dataset_dir: "OsteoDiffusion/data/bones_dataset_subset"
+dataset_data_file_name: "lumbopelvic_masked_normed_global_clip_resampled_32_32_32.npz"
