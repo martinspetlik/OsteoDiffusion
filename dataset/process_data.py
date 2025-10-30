@@ -1,5 +1,4 @@
 import os
-import dgl
 import numpy as np
 import pyvista as pv
 import matplotlib

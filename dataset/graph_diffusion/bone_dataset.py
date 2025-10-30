@@ -13,7 +13,7 @@ from torch_geometric.utils import to_scipy_sparse_matrix, to_torch_sparse_tensor
 class BoneDataset(Dataset):
     def __init__(self, data_dir, input_transform=None, input_channels=None):
 
-        local_data_path = "/home/martin/Documents/Bones_diff_model/data"
+        local_data_path = "/data"
         split_data_dir = data_dir.split("/")
         self.data_dir = os.path.join(local_data_path, split_data_dir[-1])
 

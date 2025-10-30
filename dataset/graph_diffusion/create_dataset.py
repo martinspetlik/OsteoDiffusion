@@ -21,9 +21,9 @@ def find_connected_vertices(index, cells):
 
 def create_dataset(bone_type, n_vertices_to_use=None):
     if bone_type == "L4":
-        data_dir = "/home/martin/Documents/Bones_diff_model/data/L4"
+        data_dir = "/data/L4"
     elif bone_type == "left_pelvic":
-        data_dir = "/home/martin/Documents/Bones_diff_model/data/left_pelvic"
+        data_dir = "/data/left_pelvic"
 
     u_data_path = os.path.join(data_dir, 'u.npy')
     template_data_path = os.path.join(data_dir, 'template.vtk')
@@ -76,7 +76,7 @@ def create_dataset(bone_type, n_vertices_to_use=None):
                 edges.append([vertex_id, conected_vertes])
             print("vertex_id: {}, connected: {} ".format(vertex_id, connected))
 
-        np.savez_compressed(os.path.join("/home/martin/Documents/Bones_diff_model/", "{}_edges".format(bone_type)), data=np.array(edges))
+        np.savez_compressed(os.path.join("//", "{}_edges".format(bone_type)), data=np.array(edges))
 
     print("edges ", edges)
     src, dst = zip(*edges)
