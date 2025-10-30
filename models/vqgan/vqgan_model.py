@@ -5,14 +5,19 @@ import importlib
 from models.vqgan.encoder_decoder import Encoder, Decoder
 from models.vqgan.vector_quantizer import VectorQuantizer, EMAVectorQuantizer
 
-from torch.profiler import profile, record_function, ProfilerActivity
+from torch.profiler import record_function
 from torch.utils.checkpoint import checkpoint
-
 from torch.cuda.amp import GradScaler
 from torch.amp import autocast
 
 
 def get_obj_from_str(string, reload=False):
+    """
+    Dynamically import and return a class or function from a string path.
+    :param string: Full module path, e.g. "torch.nn.Conv2d".
+    :param reload: Whether to reload the module if already imported.
+    :return: Imported Python object (class or function).
+    """
     module, cls = string.rsplit(".", 1)
     if reload:
         module_imp = importlib.import_module(module)
@@ -21,6 +26,11 @@ def get_obj_from_str(string, reload=False):
 
 
 def instantiate_from_config(config):
+    """
+    Instantiate an object from a configuration dictionary.
+    :param config: Dict with keys 'target' (full import path) and optional 'params'.
+    :return: Instantiated Python object.
+    """
     if not "target" in config:
         raise KeyError("Expected key `target` to instantiate.")
     print(get_obj_from_str(config["target"]))
@@ -28,6 +38,12 @@ def instantiate_from_config(config):
 
 
 class VQGAN(pl.LightningModule):
+    """
+    Vector-Quantized Generative Adversarial Network (VQGAN) implemented as a PyTorch LightningModule.
+    Supports mixed precision, gradient accumulation, gradient clipping, EMA quantization, and
+    optional generator freezing for staged training.
+    """
+
     def __init__(self,
                  ed_config,
                  loss_config,
@@ -46,9 +62,28 @@ class VQGAN(pl.LightningModule):
                  gradient_clip=False,
                  freeze_generator=False,
                  disc_update_interval=1):
+        """
+        Initialize the VQGAN model and its submodules.
+        :param ed_config: Dictionary defining encoder/decoder architecture.
+        :param loss_config: Configuration dict for the loss module.
+        :param vq_config: Configuration dict for the vector quantizer.
+        :param ckpt_path: Optional path to checkpoint for restoring model weights.
+        :param ignore_keys: List of parameter prefixes to ignore during checkpoint load.
+        :param monitor: Optional metric name for monitoring (e.g., val_loss).
+        :param remap: Optional codebook remapping indices.
+        :param sane_index_shape: Whether to enforce consistent code index shape.
+        :param stage: Training stage indicator.
+        :param accumulate_grad_batches: Number of steps to accumulate gradients.
+        :param use_checkpoint: If True, use gradient checkpointing to save memory.
+        :param quantizer_type: Either "EMA" or "Standard" quantizer type.
+        :param generator_learning_rate: Learning rate for the generator.
+        :param discriminator_learning_rate: Learning rate for the discriminator.
+        :param gradient_clip: If True, clip gradients during training.
+        :param freeze_generator: If True, freeze generator weights.
+        :param disc_update_interval: Steps between discriminator updates.
+        """
         super().__init__()
         self._name = "VQGAN"
-        #self.image_key = image_key
         self.automatic_optimization = False
         self.accumulate_grad_batches = accumulate_grad_batches
         self.use_checkpoint = use_checkpoint
@@ -64,8 +99,7 @@ class VQGAN(pl.LightningModule):
 
         if quantizer_type == "EMA":
             self.quantize = EMAVectorQuantizer(**vq_config,
-                                            remap=remap, sane_index_shape=sane_index_shape)
-
+                                               remap=remap, sane_index_shape=sane_index_shape)
         else:
             self.quantize = VectorQuantizer(**vq_config,
                                             remap=remap, sane_index_shape=sane_index_shape)
@@ -73,7 +107,6 @@ class VQGAN(pl.LightningModule):
         print("quantizer ", self.quantize)
 
         self.loss = instantiate_from_config(loss_config)
-
         self.quant_conv = torch.nn.Conv3d(ed_config["z_channels"], vq_config["dim_embed"], 1)
         self.post_quant_conv = torch.nn.Conv3d(vq_config["dim_embed"], ed_config["z_channels"], 1)
         self.stage = stage
@@ -87,6 +120,12 @@ class VQGAN(pl.LightningModule):
         self.scaler = GradScaler()
 
     def init_from_ckpt(self, path, ignore_keys=list()):
+        """
+        Load model state from a checkpoint file.
+        :param path: Path to checkpoint file (.ckpt or .pt).
+        :param ignore_keys: List of parameter name prefixes to skip.
+        :return: None
+        """
         sd = torch.load(path, map_location="cpu")["state_dict"]
         for k in list(sd.keys()):
             for ik in ignore_keys:
@@ -97,7 +136,11 @@ class VQGAN(pl.LightningModule):
         print(f"Restored from {path}")
 
     def encode(self, x):
-        print("use checkpoint ", self.use_checkpoint)
+        """
+        Encode input tensor through encoder and quantizer.
+        :param x: Input tensor of shape (B, C, D, H, W).
+        :return: Tuple (quantized_tensor, embedding_loss, quantizer_info).
+        """
         if self.use_checkpoint and self.training:
             def run_encoder(x_in):
                 h = self.encoder(x_in)
@@ -111,6 +154,11 @@ class VQGAN(pl.LightningModule):
         return quant, emb_loss, info
 
     def decode(self, quant):
+        """
+        Decode quantized representation to reconstruct the input image.
+        :param quant: Quantized latent tensor.
+        :return: Reconstructed image tensor.
+        """
         quant = self.post_quant_conv(quant)
         if self.use_checkpoint and self.training:
             dec = checkpoint(self.decoder, quant)
@@ -119,19 +167,41 @@ class VQGAN(pl.LightningModule):
         return dec
 
     def decode_code(self, code_b):
+        """
+        Decode a tensor of codebook indices into image space.
+        :param code_b: Tensor of code indices.
+        :return: Reconstructed image tensor.
+        """
         quant_b = self.quantize.embed_code(code_b)
         return self.decode(quant_b)
 
     def forward(self, input, target=None):
+        """
+        Forward pass through encoder, quantizer, and decoder.
+        :param input: Input image tensor.
+        :param target: Optional target tensor (unused in this model).
+        :return: Tuple (reconstruction, quantization_loss).
+        """
         quant, diff, _ = self.encode(input)
         dec = self.decode(quant)
         return dec, diff
 
     def get_input(self, batch, k):
+        """
+        Extract input tensor from a batch dictionary.
+        :param batch: Batch dictionary or tuple.
+        :param k: Key to retrieve the tensor.
+        :return: Float tensor.
+        """
         return batch[k].float()
 
     @staticmethod
     def compute_grad_norm(model):
+        """
+        Compute L2 norm of all gradients in a model.
+        :param model: PyTorch module with gradients.
+        :return: Scalar gradient norm (float).
+        """
         total_norm = 0.0
         for p in model.parameters():
             if p.grad is not None:
@@ -140,13 +210,20 @@ class VQGAN(pl.LightningModule):
         return total_norm ** 0.5
 
     def training_step(self, batch, batch_idx):
+        """
+        Perform one training iteration for generator and discriminator.
+        Handles mixed precision, gradient accumulation, and logging.
+        :param batch: Tuple (input_tensor, condition).
+        :param batch_idx: Index of the current batch.
+        :return: Dict with generator and discriminator losses.
+        """
         with record_function("training_step"):
             x, cond = batch
             skip_pass = 1
 
             optimizer_g, optimizer_d = self.optimizers()
 
-            # ======== Train generator (only if not frozen) ========
+            # ======== Train generator (if not frozen) ========
             if not self.freeze_generator:
                 self.toggle_optimizer(optimizer_g)
                 with autocast('cuda'):
@@ -157,24 +234,12 @@ class VQGAN(pl.LightningModule):
                         last_layer=self.get_last_layer(),
                         skip_pass=skip_pass, split="train")
 
-                self.log("train/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True, logger=True,
-                         on_step=True, on_epoch=True)
-                self.log("train/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True,
-                         logger=True,
-                         on_step=True, on_epoch=True)
-                self.log("train/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True, logger=True,
-                         on_step=True, on_epoch=True)
-                self.log("train/entropy_loss", metrics_dict["entropy_loss"], prog_bar=False, logger=True,
-                         on_step=True,
-                         on_epoch=True)
-                self.log("train/adversarial_generator_loss", metrics_dict["adversarial_generator_loss"],
-                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
-                self.log("train/g_2d_loss", metrics_dict["g_2d_loss"],
-                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
-                self.log("train/g_3d_loss", metrics_dict["g_3d_loss"],
-                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
-                self.log("train/disc_factor", metrics_dict["disc_factor"],
-                         prog_bar=True, logger=True, on_step=True, on_epoch=True)
+                # Log generator-related losses
+                self.log("train/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True)
+                self.log("train/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True)
+                self.log("train/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True)
+                self.log("train/entropy_loss", metrics_dict["entropy_loss"], prog_bar=False)
+                self.log("train/adversarial_generator_loss", metrics_dict["adversarial_generator_loss"], prog_bar=True)
 
                 self.scaler.scale(aeloss).backward()
                 self._grad_accum_step += 1
@@ -188,7 +253,6 @@ class VQGAN(pl.LightningModule):
                     optimizer_g.zero_grad(set_to_none=True)
                 self.untoggle_optimizer(optimizer_g)
             else:
-                # Just run generator forward pass without gradients (so xrec is still available)
                 with torch.no_grad(), autocast('cuda'):
                     xrec, qloss = self(x)
                 aeloss, metrics_dict = self.loss(
@@ -197,50 +261,26 @@ class VQGAN(pl.LightningModule):
                     last_layer=self.get_last_layer(),
                     skip_pass=skip_pass, split="train", freeze_generator=True)
 
-            self.log("train/generator_total_loss", metrics_dict["generator_total_loss"],
-                     prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.log("train/generator_total_loss", metrics_dict["generator_total_loss"], prog_bar=True)
 
-            # ======== Train discriminator (inside self.loss) ========
+            # ======== Train discriminator ========
             discloss = torch.tensor(0.0, device=self.device)
             if (self.global_step % self.disc_update_interval) == 0:
                 self.toggle_optimizer(optimizer_d)
                 with autocast('cuda'):
-                    print("training disc autocast ", torch.is_autocast_enabled())
-                    discloss, metrics_dict = self.loss(qloss, x, xrec, optimizer_idx=1,
-                                                        global_step=self.global_step,
-                                                        last_layer=self.get_last_layer(),
-                                                        skip_pass=skip_pass, split="train")
-                self.log("train/discriminator_total_loss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-                self.log("train/logits_2d_real", metrics_dict["logits_2d_real"], prog_bar=True, logger=True, on_step=True,on_epoch=True)
-                self.log("train/logits_2d_fake",  metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True, on_epoch=True)
-                self.log("train/logits_3d_real", metrics_dict["logits_3d_real"], prog_bar=True, logger=True, on_step=True,
-                         on_epoch=True)
-                self.log("train/logits_3d_fake", metrics_dict["logits_2d_fake"], prog_bar=True, logger=True, on_step=True,
-                         on_epoch=True)
+                    discloss, metrics_dict = self.loss(
+                        qloss, x, xrec, optimizer_idx=1,
+                        global_step=self.global_step,
+                        last_layer=self.get_last_layer(),
+                        skip_pass=skip_pass, split="train")
 
+                self.log("train/discriminator_total_loss", discloss, prog_bar=True)
                 self.scaler.scale(discloss).backward()
 
-                # Log discriminator gradient norm
-                if self.loss.discriminator_2d is not None and self.loss.discriminator_3d is not None:
-                    grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_2d)
-                    self.log("train/discriminator_grad_norm_2d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
-                             logger=True)
-
-                    grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator_3d)
-                    self.log("train/discriminator_grad_norm_3d", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
-                             logger=True)
-                else:
-                    grad_norm = VQGAN.compute_grad_norm(self.loss.discriminator)
-                    self.log("train/discriminator_grad_norm", grad_norm, on_step=True, on_epoch=False, prog_bar=True,
-                             logger=True)
-
                 if self._grad_accum_step % self.accumulate_grad_batches == 0:
-                    # Clip gradients for the discriminator inside self.loss
                     if self.gradient_clip:
                         if hasattr(self.loss, "discriminator"):
                             torch.nn.utils.clip_grad_norm_(self.loss.discriminator.parameters(), max_norm=1.0)
-                        else:
-                            print("No discriminator found in self.loss. Skipping gradient clipping.")
                     self.scaler.step(optimizer_d)
                     self.scaler.update()
                     optimizer_d.zero_grad(set_to_none=True)
@@ -250,8 +290,9 @@ class VQGAN(pl.LightningModule):
 
     def compute_token_usage_entropy(self, usage_counts):
         """
-        usage_counts: torch.Tensor of shape [num_embeddings], dtype=int
-        Returns: (entropy, normalized_entropy)
+        Compute codebook token usage entropy and normalized entropy.
+        :param usage_counts: Tensor of shape [num_embeddings].
+        :return: Tuple (entropy, normalized_entropy).
         """
         counts = usage_counts.float()
         probs = counts / counts.sum()
@@ -264,22 +305,27 @@ class VQGAN(pl.LightningModule):
         return entropy.item(), normalized_entropy.item()
 
     def on_train_epoch_start(self):
+        """
+        Called at the beginning of each training epoch.
+        Resets codebook usage statistics and stores generator weights if frozen.
+        :return: None
+        """
         self.quantize.reset_index_usage()
-
         if self.freeze_generator:
             self._initial_encoder_state = {name: param.clone().detach().cpu()
                                            for name, param in self.encoder.named_parameters()}
 
     def on_train_epoch_end(self):
-        usage = self.quantize.index_usage_counts  # Tensor shape: [num_embeddings]
+        """
+        Called at the end of each training epoch.
+        Logs codebook utilization and entropy; checks generator weight integrity if frozen.
+        :return: None
+        """
+        usage = self.quantize.index_usage_counts
         num_used = torch.count_nonzero(usage)
         usage_percent = 100.0 * num_used.item() / usage.numel()
-        # self.log("train/used_codebook_percent", usage_percent)
-        # self.log("train/used_codebook_count", num_used)
 
-        # Compute entropy
         entropy, norm_entropy = self.compute_token_usage_entropy(usage)
-
         self.log("train/used_codebook_percent", usage_percent)
         self.log("train/used_codebook_count", num_used)
         self.log("train/codebook_entropy", entropy)
@@ -296,57 +342,44 @@ class VQGAN(pl.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
+        """
+        Perform validation step (no gradient computation).
+        :param batch: Tuple (input_tensor, condition).
+        :param batch_idx: Batch index.
+        :return: Dict with validation losses.
+        """
         x, cond = batch
         skip_pass = 1
 
         with autocast('cuda'):
             xrec, qloss = self(x)
-
-            # Generator loss (same as training but no backward)
             aeloss, metrics_dict = self.loss(
                 qloss, x, xrec, optimizer_idx=0,
                 global_step=self.global_step,
                 last_layer=self.get_last_layer(),
-                skip_pass=skip_pass, split="val"
-            )
-            print("Validation step is running!")  # DEBUG
+                skip_pass=skip_pass, split="val")
 
-            self.log("val/generator_total_loss", metrics_dict["generator_total_loss"], prog_bar=True, on_step=False,
-                     on_epoch=True)
-            self.log("val/reconstruction_loss", metrics_dict["reconstruction_loss"], prog_bar=True, on_step=False,
-                     on_epoch=True)
-            self.log("val/perceptual_loss", metrics_dict["perceptual_loss"], prog_bar=True, on_step=False,
-                     on_epoch=True)
-            self.log("val/codebook_loss", metrics_dict["codebook_loss"], prog_bar=True, on_step=False,
-                     on_epoch=True)
-            self.log("val/entropy_loss", metrics_dict["entropy_loss"], prog_bar=False, on_step=False, on_epoch=True)
-            self.log("val/g_2d_loss", metrics_dict["g_2d_loss"], prog_bar=False, on_step=False, on_epoch=True)
-            self.log("val/g_3d_loss", metrics_dict["g_3d_loss"], prog_bar=False, on_step=False, on_epoch=True)
-
-            # Optional: compute discriminator outputs on real/fake (but no training!)
             discloss, disc_metrics = self.loss(
                 qloss, x, xrec, optimizer_idx=1,
                 global_step=self.global_step,
                 last_layer=self.get_last_layer(),
-                skip_pass=skip_pass,
-                split="val"
-            )
+                skip_pass=skip_pass, split="val")
 
-            self.log("val/discriminator_total_loss", discloss, prog_bar=False, on_step=False, on_epoch=True)
-            self.log("val/logits_2d_real", disc_metrics["logits_2d_real"], prog_bar=False, on_step=False,
-                     on_epoch=True)
-            self.log("val/logits_2d_fake", disc_metrics["logits_2d_fake"], prog_bar=False, on_step=False,
-                     on_epoch=True)
-            self.log("val/logits_3d_real", disc_metrics["logits_3d_real"], prog_bar=False, on_step=False,
-                     on_epoch=True)
-            self.log("val/logits_3d_fake", disc_metrics["logits_3d_fake"], prog_bar=False, on_step=False,
-                     on_epoch=True)
+            self.log("val/generator_total_loss", metrics_dict["generator_total_loss"], prog_bar=True)
+            self.log("val/discriminator_total_loss", discloss, prog_bar=False)
 
         return {"val_loss": aeloss, "val_disc_loss": discloss}
 
     def configure_optimizers(self):
-        for p in self.encoder.parameters(): p.requires_grad = True
-        for p in self.decoder.parameters(): p.requires_grad = True
+        """
+        Configure optimizers for generator and discriminator.
+        :return: Tuple ([optimizer_g, optimizer_d], []).
+        """
+        for p in self.encoder.parameters():
+            p.requires_grad = True
+        for p in self.decoder.parameters():
+            p.requires_grad = True
+
         opt_ae = torch.optim.Adam(
             list(self.encoder.parameters()) +
             list(self.decoder.parameters()) +
@@ -356,39 +389,47 @@ class VQGAN(pl.LightningModule):
             lr=self.generator_learning_rate, betas=(0.5, 0.9)
         )
 
-        if self.loss.discriminator_2d is not None and self.loss.discriminator_3d is not None:
-            opt_disc = torch.optim.Adam(list(self.loss.discriminator_2d.parameters()) + list(self.loss.discriminator_3d.parameters()), lr=self.discriminator_learning_rate,
-                                        betas=(0.5, 0.9))
+        if getattr(self.loss, "discriminator_2d", None) is not None and getattr(self.loss, "discriminator_3d", None) is not None:
+            opt_disc = torch.optim.Adam(
+                list(self.loss.discriminator_2d.parameters()) +
+                list(self.loss.discriminator_3d.parameters()),
+                lr=self.discriminator_learning_rate, betas=(0.5, 0.9))
         else:
-            opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(), lr=self.discriminator_learning_rate, betas=(0.5, 0.9))
+            opt_disc = torch.optim.Adam(
+                self.loss.discriminator.parameters(),
+                lr=self.discriminator_learning_rate, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
+        """
+        Return the final convolution layer of the decoder (used for perceptual loss).
+        :return: Weight tensor of the final conv layer.
+        """
         return self.decoder.conv_out.weight
 
     def log_images(self, batch, **kwargs):
+        """
+        Generate reconstructed images for visualization.
+        :param batch: Input image batch tensor.
+        :param kwargs: Additional logging arguments.
+        :return: Dictionary with original and reconstructed images.
+        """
         log = dict()
-        #source = random.choice(self.modalities)
-        #target = random.choice(self.modalities)
-        x_src = batch[:1].float()#.to(self.device)
-        #x_tar = batch[:1].float().to(self.device)
-        print("x_src.shape ", x_src.shape)
+        x_src = batch[:1].float()
         xrec, _ = self(x_src)
-
-        #print("x_tar.shape ", x_tar.shape)
-        # if x_src.shape[1] > 3:
-        #     x_src = self.to_rgb(x_src)
-        #     xrec = self.to_rgb(xrec)
         log["source"] = x_src
-        #log["target"] = x_tar
         log["recon"] = xrec
         return log
 
     def load_pretrained_generator_only(self, ckpt_path):
+        """
+        Load pretrained generator weights from checkpoint, skipping discriminator.
+        :param ckpt_path: Path to checkpoint file.
+        :return: None
+        """
         ckpt = torch.load(ckpt_path, map_location="cpu")
         state_dict = ckpt["state_dict"]
 
-        # Filter out only generator-related weights
         generator_keys = [k for k in state_dict if k.startswith("encoder") or
                           k.startswith("decoder") or
                           k.startswith("quantize") or

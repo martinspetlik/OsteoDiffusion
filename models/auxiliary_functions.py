@@ -39,6 +39,7 @@ def inverse_latent_transform(latents, vqgan):
     :param vqgan: VQGAN model with quantize.embedding.weight.
     :return: original latent representation.
     """
+    print("latents.shape ", latents.shape)
     w_min = vqgan.quantize.embedding.weight.min().item()
     w_max = vqgan.quantize.embedding.weight.max().item()
     return ((latents + 1.0) / 2.0) * (w_max - w_min) + w_min

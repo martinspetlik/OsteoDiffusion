@@ -36,6 +36,10 @@ class LPIPSALDM(nn.Module):
     def forward(self, input, target):
         in0_input, in1_input = normalize_tensor(input), normalize_tensor(
             target)  # (self.scaling_layer(input), self.scaling_layer(target))
+        # Convert to bfloat16 just before passing to self.net
+        # in0_input = in0_input.to(torch.float32)
+        # in1_input = in1_input.to(torch.float32)
+
         outs0, outs1 = self.net(in0_input), self.net(in1_input)
         feats0, feats1 = normalize_tensor(outs0), normalize_tensor(outs1)
         diffs = (feats0 - feats1) ** 2
