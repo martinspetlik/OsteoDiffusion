@@ -1,0 +1,28 @@
+random_seed: 12345
+optimizer_name: ["AdamW"]
+optimizer_kwargs: [{"lr": 0.00025, "betas":[0.9, 0.99], "weight_decay": 0.02}]
+num_epochs: 150
+num_trials: 100
+batch_size_train: [4]
+batch_size_sample: [1]
+n_train_samples: [38]
+n_test_samples: 0
+train_samples_ratio: 1.0
+val_samples_ratio: 0.1
+loss_function: [["MSE", []]]
+scheduler: [{'class': "ReduceLROnPlateau", 'patience': 30, 'factor': 0.7}]
+ema_beta: 0.999
+sampler_class: BruteForceSampler
+train: True
+image_size: [4, 4, 4, 4]
+cond_dim: 2
+cond_scale: 0
+unet_config: [{"dim": 64, "cond_dim": 2, "channels": 4, "dim_mults": [1, 2, 4], "attn_heads": 4, "attn_dim_head": 32, "use_rotary_emb": True, "use_temporal_attention": True}]
+noise_scheduler_params: {"beta_scheduler_type": "cosine", "num_timesteps": 1000}
+train_on_codebooks: False
+data_file_name: "lumbopelvic_masked_normed_global_clip_resampled_32_32_32.npz"
+unet_class_name: "Unet3D"
+vqgan_results_dir: "OsteoDiffusion/optuna_runs/vqgan/test_result"
+vqgan_model_path: "OsteoDiffusion/optuna_runs/vqgan/test_result/logger/version_0/checkpoints/val/last.ckpt"
+vqgan_trials_config: "OsteoDiffusion/configs/vqgan/test_vqgan_config.yaml"
+

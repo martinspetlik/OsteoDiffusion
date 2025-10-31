@@ -85,3 +85,25 @@ python postprocess/postprocess_vqgan_results.py configuration
 
 
 
+## Denoising Diffusion Training
+
+To train denoising diffusion model on latents run:
+
+```bash
+python models/denoising_diffusion_latents/train_denoising_diffusion.py configuration data_dir results_dir -c --mlfloww
+```
+- `configuration` (e.g. [`configs/denoising_diffusion_latents/test_diffusion_config.yaml`](configs/denoising_diffusion_latents/test_diffusion_config.yaml))
+- `data_dir`: Path to the dataset (e.g., `data/bones_dataset_subset` - small dataset (38 samples))
+- `results_dir`: Where results and logs will be saved
+- `-c`: Use GPU (CUDA or AMD ROCm) if available
+- `--mlflow`: Use MLFlow monitor
+
+To postprocess trained denoising diffusion model (loss plots, reconstructions, etc.) run:
+
+```bash
+python postprocess/postprocess_diffusion_latents_results.py configuration
+```
+
+- `configuration` (e.g. [`configs/denoising_diffusion_latents/diffusion_postprocess_config.yaml`](configs/denoising_diffusion_latents/diffusion_postprocess_config.yaml))
+
+## Sampling
