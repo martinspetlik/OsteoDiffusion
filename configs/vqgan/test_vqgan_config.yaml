@@ -2,7 +2,7 @@ generator_learning_rate: [0.00005]
 discriminator_learning_rate: [0.00005]
 optimizer_name: ["AdamW"]
 lr: [0.00005]
-num_epochs: 25
+num_epochs: 150
 num_trials: 100
 random_seed: 12345
 batch_size_train: [1]
