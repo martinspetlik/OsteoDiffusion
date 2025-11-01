@@ -1,109 +1,123 @@
-
 # OsteoDiffusion
 
-A VQGAN + Latent Diffusion framework for generating 3D pelvic bone structures.
----
+A **VQGAN + Latent Diffusion** framework for generating realistic 3D pelvic bone structures.
 
+---
 
 ## 🔧 Features
 
-This repository consists of three components:
+This repository is composed of three main components:
 
-1. **VQGAN training**  
-   - Trains a Vector-Quantized GAN (VQGAN) to learn compact latent representations of pelvic bone CT data.
-   - The encoder compresses 3D volumes into a latent space, and the decoder reconstructs them back with minimal loss.
-   - The trained VQGAN is later used as the backbone for diffusion training on latents.
+1. **🧠 VQGAN Training**  
+   - Trains a **Vector-Quantized GAN (VQGAN)** to learn compact latent representations of pelvic bone CT data.  
+   - The encoder compresses 3D volumes into a latent space (codebooks), while the decoder reconstructs them with minimal information loss.  
+   - The trained VQGAN serves as the backbone for diffusion training on latent representations.
 
-2. **Denoising diffusion training**  
-   - Trains a Denoising Diffusion Probabilistic Model (DDPM) on the learned latent space from VQGAN.
-   - By operating in latent space instead of voxel space, training becomes computationally efficient while preserving structural detail.
-   - The model learns to generate realistic latent codes that correspond to plausible pelvic bone structures.
-   
-3. **Sampling**  
-   - Uses the trained diffusion model to generate synthetic latent codes.
-   - These latents are decoded through the VQGAN decoder to reconstruct 3D pelvic bone volumes.
+2. **🌫️ Denoising Diffusion Training**  
+   - Trains a **Denoising Diffusion Probabilistic Model (DDPM)** in the learned latent space.  
+   - Operating in latent space (instead of voxel space) reduces computational cost while preserving anatomical structure.  
+   - The diffusion model learns to generate realistic latent codes.
 
-Each part can be run independently, using the provided data.
+3. **🎨 Generating Sampling**  
+   - Uses the trained diffusion model to sample new latent codes.  
+   - The VQGAN decoder then reconstructs them into full 3D pelvic bone volumes.
+
+Each module can be executed independently using the provided datasets and configuration files.
 
 ---
 
-
-
 ## 🛠 Installation & Requirements
 
-- Developed and tested using **Python 3.10** with libraries listed in dependency file: [`requirements.txt`](requirements.txt)   
+- Developed and tested with **Python 3.10**  
+- Dependencies are listed in [`requirements.txt`](requirements.txt)
 
-#### Set up Python environment:
+### Set up the Python environment
 
 ```bash
 cd OsteoDiffusion
 export PYTHONPATH=.
 ```
-
 ---
 
 ## 📦 Dataset Generation
 
 [BoneDat](https://www.nature.com/articles/s41597-025-05161-y) dataset of pelvic bones CT scans is adopted. The complete dataset can be found at [https://zenodo.org/records/15189761](https://zenodo.org/records/15189761)
 
-In particular "masked.nii.gz" files in its /derived/segmentation directories are preprocessed to form the dataset used for VQGAN training.
+Specifically, the "masked.nii.gz" files from the /derived/segmentation directories are preprocessed to form the dataset for VQGAN training.
 
-Before training VQGAN, raw CT scans need to be clipped, normalized, and resampled into a consistent voxel grid.
-We provide a preprocessing script to generate a training-ready dataset.
+Before training, raw CT scans are clipped, normalized, and resampled into a consistent voxel grid.
+We provide a preprocessing script to generate a training-ready dataset:
 
 ```bash
 python dataset/form_dataset.py databse dataset_dir
 ```
+**Arguments:**
 - `database`: Path to the BoneDat dataset (must contain `derived/segmentation/*/masked.nii.gz` and `raw/*/metadata.xlsx`)
-- `dataset_dir`: Path where the processed dataset will be stored.
+- `dataset_dir`: Directory where the processed dataset will be saved.
 
-For test purposes there are few samples in `data/bones_dataset_subset`
+> For quick testing, a small subset is available in: `data/bones_dataset_subset`
 
 
 ## 🧠 VQGAN Training
 
-To train vqgan run:
+Train the VQGAN model using:
 
 ```bash
 python models/vqgan/train_model_vqgan.py configuration dataset_dir results_dir -c --mlflow
 ```
-
+**Arguments:**
 - `configuration` (e.g. [`configs/vqgan/test_vqgan_config.yaml`](configs/vqgan/test_vqgan_config.yaml))
 - `data_dir`: Path to the dataset (e.g., `data/bones_dataset_subset` - small dataset (38 samples))  
-- `results_dir`: Where results and logs will be saved
+- `results_dir`: Directory for saving training results and logs  
 - `-c`: Use GPU (CUDA or AMD ROCm) if available
 - `--mlflow`: Use MLFlow monitor
 
+### Postprocessing
 
-To postprocess trained vqgan (loss plots, reconstructions, etc.) run:
+To visualize training curves, reconstructions, and metrics:
 
 ```bash
 python postprocess/postprocess_vqgan_results.py configuration
 ```
-
 - `configuration` (e.g. [`configs/vqgan/vqgan_postprocess_config.yaml`](configs/vqgan/vqgan_postprocess_config.yaml))
 
 
 
-## Denoising Diffusion Training
+## 🌫️ Denoising Diffusion Training
 
-To train denoising diffusion model on latents run:
+Train the latent-space diffusion model:
 
 ```bash
 python models/denoising_diffusion_latents/train_denoising_diffusion.py configuration data_dir results_dir -c --mlfloww
 ```
+**Arguments:**
 - `configuration` (e.g. [`configs/denoising_diffusion_latents/test_diffusion_config.yaml`](configs/denoising_diffusion_latents/test_diffusion_config.yaml))
 - `data_dir`: Path to the dataset (e.g., `data/bones_dataset_subset` - small dataset (38 samples))
 - `results_dir`: Where results and logs will be saved
 - `-c`: Use GPU (CUDA or AMD ROCm) if available
 - `--mlflow`: Use MLFlow monitor
 
-To postprocess trained denoising diffusion model (loss plots, reconstructions, etc.) run:
+### Postprocessing
+To analyze and visualize diffusion model results:
 
 ```bash
 python postprocess/postprocess_diffusion_latents_results.py configuration
 ```
-
 - `configuration` (e.g. [`configs/denoising_diffusion_latents/diffusion_postprocess_config.yaml`](configs/denoising_diffusion_latents/diffusion_postprocess_config.yaml))
 
-## Sampling
+
+## 🎨 Generating Samples
+
+To generate new 3D pelvic bone structures using the trained VQGAN and diffusion model:
+
+```bash
+python postprocess/generate_samples.py configuration
+```
+- `configuration` (e.g. [`configs/test_sampling_config.yamll`](configs/test_sampling_config.yaml))
+
+
+✅ **Tip:**  
+For reproducible results, make sure that:
+- The same configuration files and random seeds are used during training and sampling.  
+- Model checkpoints (`.pt` or `.ckpt`) are correctly referenced in your configuration files.
+

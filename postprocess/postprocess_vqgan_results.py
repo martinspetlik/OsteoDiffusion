@@ -133,7 +133,7 @@ def load_models(results_dir, model_checkpoint_path, vqgan_train_config, dataset)
     # Helper function to sort by version number
     import re
     def extract_version_number(path):
-        match = re.search(r"version_(\\d+)", path)
+        match = re.search(r"version_(\d+)", path)
         return int(match.group(1)) if match else -1
 
     csv_files_sorted = sorted(csv_files, key=extract_version_number)
@@ -163,11 +163,9 @@ def load_models(results_dir, model_checkpoint_path, vqgan_train_config, dataset)
     # Disable gradients for evaluation
     with torch.no_grad():
         model_config = load_trials_config(vqgan_train_config)["model_config"][0]
-        print("model config ", model_config)
         model_checkpoint = VQGAN.load_from_checkpoint(model_checkpoint_path, **model_config)
 
         df = all_metrics
-        print(df.columns)
 
         # Compute grouped loss statistics
         if "train/reconstruction_loss_epoch" in df:

@@ -1,0 +1,9 @@
+denoising_diffusion_results_dir: "OsteoDiffusion/optuna_runs/denoising_diffusion_latents/test_result"
+denoising_diffusion_model_path: "OsteoDiffusion/optuna_runs/denoising_diffusion_latents/test_result/model.pt"
+denoising_diffusion_train_config: "OsteoDiffusion/configs/denoising_diffusion_latents/test_diffusion_config.yaml"
+vqgan_results_dir: "OsteoDiffusion/optuna_runs/vqgan/test_result"
+vqgan_model_path: "OsteoDiffusion/optuna_runs/vqgan/test_result/logger/version_0/checkpoints/val/last.ckpt"
+dataset_dir: "OsteoDiffusion/data/bones_dataset_subset"
+dataset_data_file_name: "lumbopelvic_masked_normed_local_resampled_32_32_32.npz"
+clamp_diffusion_samples: False
+
