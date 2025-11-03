@@ -8,7 +8,6 @@ from visualization.visualize_data import plot_train_valid_loss, render_3d_scan, 
 import scipy as sc
 from models.vqgan.vqgan_model import VQGAN
 import pandas as pd
-import nibabel as nib
 import os
 import glob
 import yaml
@@ -24,27 +23,6 @@ def load_dataset(dataset_dir, data_file_name):
     """
     dataset = BoneDatasetCT(data_dir=dataset_dir, data_file_name=data_file_name)
     return dataset
-
-
-def plot_log_images(images_dir, epoch):
-    """
-    Render saved .nii.gz images from a specified epoch and save them as 3D visualizations.
-
-    :param images_dir: Directory containing logged images (usually Lightning logger outputs).
-    :param epoch: Epoch number to visualize.
-    :return: None
-    """
-    epoch_str = f"e-{epoch:06}"
-    nii_files = sorted(glob.glob(os.path.join(images_dir, f"*_{epoch_str}_*.nii.gz")))
-    print("nii_files ", nii_files)
-    for file in nii_files:
-        base = os.path.basename(file)
-        label = base.split("_")[0]  # e.g., 'input', 'recon', 'target'
-        print("label ", label)
-        img = np.squeeze(nib.load(file).get_fdata())
-        print("img ", img.shape)
-        if label in ["source", "recon"]:
-            render_3d_scan(img, title=label, fig_name=f"{label}_prediction.png")
 
 
 def get_vqgan_latents(vqgan, dataloader, device, working_dir):

@@ -134,6 +134,7 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
     batch_size_sample = 1
     n_samples = 50
     generated_samples = []
+    results_dir = os.path.abspath(results_dir)
 
     torch.manual_seed(333)
 
@@ -183,9 +184,13 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
 
                 # Save and visualize
                 np.save(os.path.join(sample_dir, "decoded_samples"), np.squeeze(decoded_samples.cpu().numpy()))
-                render_3d_scan(np.squeeze(decoded_samples.cpu().numpy()),
-                               title="Generated sample",
-                               fig_name=os.path.join(sample_dir, "gen_sample.png"))
+
+                try:
+                    render_3d_scan(np.squeeze(decoded_samples.cpu().numpy()),
+                                   title="Generated sample",
+                                   fig_name=os.path.join(sample_dir, "gen_sample.png"))
+                except ImportError as e:
+                    print(e.msg)
 
                 # Apply threshold and convert to HU scale
                 threshold = -0.97
@@ -196,9 +201,12 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
                 inv_decoded_samples = (decoded_samples + 1) / 2
                 inv_decoded_samples = inv_decoded_samples * (max_value - min_value) + min_value
 
-                render_3d_scan(np.squeeze(inv_decoded_samples),
+                try:
+                    render_3d_scan(np.squeeze(inv_decoded_samples),
                                title="Generated sample (inverse transform)",
                                fig_name=os.path.join(sample_dir, "gen_sample_inv.png"))
+                except ImportError as e:
+                    print(e.msg)
 
 
 if __name__ == "__main__":

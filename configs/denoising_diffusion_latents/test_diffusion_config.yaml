@@ -25,4 +25,7 @@ unet_class_name: "Unet3D"
 vqgan_results_dir: "OsteoDiffusion/optuna_runs/vqgan/test_result"
 vqgan_model_path: "OsteoDiffusion/optuna_runs/vqgan/test_result/logger/version_0/checkpoints/val/last.ckpt"
 vqgan_trials_config: "OsteoDiffusion/configs/vqgan/test_vqgan_config.yaml"
-
+mlflow_config: {
+"tracking_uri": "http://localhost:5000",
+"experiment_name": "denoising_diffusion_tuning"
+}
