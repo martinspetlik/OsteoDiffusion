@@ -2,6 +2,11 @@
 
 A **VQGAN + Latent Diffusion** framework for generating realistic 3D pelvic bone structures.
 
+This project is partly inspired by the following repositories and prior work:
+- [medicaldiffusion](https://github.com/FirasGit/medicaldiffusion)
+- [ALDM](https://github.com/jongdory/ALDM)
+- Project structure and code organization are inspired by [MLMC-DFM](https://github.com/martinspetlik/MLMC-DFM)
+
 ---
 
 ## 🔧 Features
@@ -28,8 +33,12 @@ Each module can be executed independently using the provided datasets and config
 
 ## 🛠 Installation & Requirements
 
-- Developed and tested with **Python 3.10**  
+- Developed and tested with **Python 3.12**
 - Dependencies are listed in [`requirements.txt`](requirements.txt)
+- For full **3D visualization** during postprocessing, install **[Mayavi](https://docs.enthought.com/mayavi/mayavi/)**:
+  ```bash
+  pip install mayavi
+  ```
 
 ### Set up the Python environment
 
@@ -49,7 +58,7 @@ Before training, raw CT scans are clipped, normalized, and resampled into a cons
 We provide a preprocessing script to generate a training-ready dataset:
 
 ```bash
-python dataset/form_dataset.py databse dataset_dir
+python dataset/form_dataset.py database dataset_dir
 ```
 **Arguments:**
 - `database`: Path to the BoneDat dataset (must contain `derived/segmentation/*/masked.nii.gz` and `raw/*/metadata.xlsx`)
@@ -88,7 +97,7 @@ python postprocess/postprocess_vqgan_results.py configuration
 Train the latent-space diffusion model:
 
 ```bash
-python models/denoising_diffusion_latents/train_denoising_diffusion.py configuration data_dir results_dir -c --mlfloww
+python models/denoising_diffusion_latents/train_denoising_diffusion.py configuration data_dir results_dir -c --mlflow
 ```
 **Arguments:**
 - `configuration` (e.g. [`configs/denoising_diffusion_latents/test_diffusion_config.yaml`](configs/denoising_diffusion_latents/test_diffusion_config.yaml))
@@ -111,13 +120,15 @@ python postprocess/postprocess_diffusion_latents_results.py configuration
 To generate new 3D pelvic bone structures using the trained VQGAN and diffusion model:
 
 ```bash
-python postprocess/generate_samples.py configuration
+python postprocess/generate_samples.py configuration results_dir
 ```
-- `configuration` (e.g. [`configs/test_sampling_config.yamll`](configs/test_sampling_config.yaml))
+**Arguments:**
+- `configuration`: e.g. [`configs/test_sampling_config.yaml`](configs/test_sampling_config.yaml)
+- `results_dir`: Directory where generated samples will be saved as `.npy` files
 
 
 ✅ **Tip:**  
 For reproducible results, make sure that:
-- The same configuration files and random seeds are used during training and sampling.  
+- The same configuration files and random seeds are used during training and sampling.
 - Model checkpoints (`.pt` or `.ckpt`) are correctly referenced in your configuration files.
 
