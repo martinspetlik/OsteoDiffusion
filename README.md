@@ -79,7 +79,7 @@ python models/vqgan/train_model_vqgan.py configuration dataset_dir results_dir -
 - `data_dir`: Path to the dataset (e.g., `data/bones_dataset_subset` - small dataset (38 samples))  
 - `results_dir`: Directory for saving training results and logs  
 - `-c`: Use GPU (CUDA or AMD ROCm) if available
-- `--mlflow`: Use MLFlow monitor
+- `--mlflow`: Use MLFlow monitor. **Do not include this flag if you want to run without MLflow.**
 
 ### Postprocessing
 
@@ -104,7 +104,7 @@ python models/denoising_diffusion_latents/train_denoising_diffusion.py configura
 - `data_dir`: Path to the dataset (e.g., `data/bones_dataset_subset` - small dataset (38 samples))
 - `results_dir`: Where results and logs will be saved
 - `-c`: Use GPU (CUDA or AMD ROCm) if available
-- `--mlflow`: Use MLFlow monitor
+- `--mlflow`: Use MLFlow monitor. **Do not include this flag if you want to run without MLflow.**
 
 ### Postprocessing
 To analyze and visualize diffusion model results:
