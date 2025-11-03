@@ -107,7 +107,7 @@ python models/denoising_diffusion_latents/train_denoising_diffusion.py configura
 - `--mlflow`: Use MLFlow monitor. **Do not include this flag if you want to run without MLflow.**
 
 ### Postprocessing
-To analyze and visualize diffusion model results:
+To analyze and visualize diffusion model results (in latent space):
 
 ```bash
 python postprocess/postprocess_diffusion_latents_results.py configuration
