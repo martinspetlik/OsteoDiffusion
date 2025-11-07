@@ -1,5 +1,5 @@
 """
-Optuna-based hyperparameter optimization for VQGAN / MedicalDiffusion models
+Optuna-based hyperparameter optimization for VQGAN models
 with PyTorch Lightning and MLflow integration.
 
 This script:

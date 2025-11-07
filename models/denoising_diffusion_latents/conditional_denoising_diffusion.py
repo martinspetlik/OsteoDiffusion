@@ -180,83 +180,119 @@ class ConditionalDiffusion(nn.Module):
         x0_pred = (x_t - sqrt_one_minus_alpha_bar_t * noise) / (sqrt_alpha_bar_t + 1e-12)
         return x0_pred
 
-    def p_mean_variance(self, x_t, t, clip_denoised: bool):
-        """
-        Compute model mean & variance for p(x_{t-1} | x_t).
+    # ------------------------------------------------------------------
+    # Reverse process p(x_{t-1} | x_t, cond)
+    # ------------------------------------------------------------------
 
-        Steps:
-        1. Model predicts ε_θ(x_t, t).
-        2. Reconstruct x₀_pred from noise prediction.
-        3. Use q_posterior formula to get mean/variance/log-variance.
-
-        :param clip_denoised: whether to clamp x₀_pred to [-1, 1] for stability.
+    def p_mean_variance(self, x_t, t, cond=None, clip_denoised=True):
         """
-        # model should return eps prediction for shape x_t
-        eps_pred = self.model(x_t, t)  # if your model signature is different adapt
-        # recover x0
+        Compute model mean and variance for the reverse process p(x_{t-1} | x_t, cond).
+
+        :param x_t: Noisy sample at timestep t.
+        :param t: Timestep indices.
+        :param cond: Conditioning tensor or ``None`` for unconditional sampling. Default is ``None``.
+        :param clip_denoised: Whether to clamp predicted x₀ to [-1, 1]. Default is ``True``.
+        :return: Tuple (model_mean, posterior_variance, posterior_log_variance)
+                 where:
+                   - model_mean: predicted mean μ_θ(x_t, t, cond)
+                   - posterior_variance: variance σ²_t of the reverse process
+                   - posterior_log_variance: log variance for numerical stability
+        """
+        eps_pred = self.model(x_t, t, cond)
         x0_pred = self.predict_start_from_noise(x_t, t, eps_pred)
-
         if clip_denoised:
             x0_pred = x0_pred.clamp(-1.0, 1.0)
-
-        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
-            x_start=x0_pred, x_t=x_t, t=t
-        )
-        return model_mean, posterior_variance, posterior_log_variance
+        return self.q_posterior(x_start=x0_pred, x_t=x_t, t=t)
 
     @torch.no_grad()
-    def p_sample(self, x_t, t, clip_denoised=True, repeat_noise=False, deterministic=False):
+    def p_sample(
+            self,
+            x_t,
+            t,
+            cond=None,
+            cond_scale=1.0,
+            clip_denoised=True,
+            repeat_noise=False,
+            deterministic=False,
+    ):
         """
-        One reverse step:
-         - deterministic=False: stochastic DDPM step with posterior variance
-         - deterministic=True: return posterior mean (no added noise)  (useful to inspect)
+        Perform one reverse diffusion step p(x_{t-1} | x_t, cond).
 
-        Formula:
-        --------
-        x_{t-1} = μ_θ(x_t, t) + σ_t * z,   z ~ N(0, I)
-        (unless t=0, then no noise is added)
+        Implements classifier-free guidance when ``cond_scale`` > 1.0.
+
+        :param x_t: Current noisy sample at timestep t.
+        :param t: Current timestep indices.
+        :param cond: Conditioning tensor or ``None`` for unconditional sampling. Default is ``None``.
+        :param cond_scale: Guidance scale for classifier-free guidance. Default is 1.0.
+        :param clip_denoised: Whether to clamp predicted x₀ to [-1, 1]. Default is ``True``.
+        :param repeat_noise: Whether to reuse the same noise across samples. Default is ``False``.
+        :param deterministic: If ``True``, disables noise (DDIM-style deterministic sampling). Default is ``False``.
+        :return: Predicted sample x_{t-1}, same shape as x_t.
         """
         b, *_, device = *x_t.shape, x_t.device
-        model_mean, posterior_variance, posterior_log_variance = self.p_mean_variance(
-            x_t=x_t, t=t, clip_denoised=clip_denoised
-        )
+
+        # --- Classifier-free guidance ---
+        if cond is not None and cond_scale != 1.0:
+            model_mean_cond, var_cond, _ = self.p_mean_variance(
+                x_t, t, cond=cond, clip_denoised=clip_denoised
+            )
+            model_mean_uncond, _, _ = self.p_mean_variance(
+                x_t, t, cond=None, clip_denoised=clip_denoised
+            )
+            model_mean = model_mean_uncond + cond_scale * (model_mean_cond - model_mean_uncond)
+            posterior_variance = var_cond
+        else:
+            model_mean, posterior_variance, _ = self.p_mean_variance(
+                x_t, t, cond=cond, clip_denoised=clip_denoised
+            )
 
         if deterministic:
             return model_mean
-        else:
-            noise = self.noise_like(x_t.shape, device, repeat=repeat_noise)
-            # when t == 0 we should not add noise (nonzero_mask = 0 for t==0)
-            nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x_t.shape) - 1))).to(device)
-            return model_mean + nonzero_mask * torch.sqrt(posterior_variance) * noise
+
+        noise = self.noise_like(x_t.shape, device, repeat=repeat_noise)
+        nonzero_mask = (1 - (t == 0).float()).reshape(
+            b, *((1,) * (len(x_t.shape) - 1))
+        ).to(device)
+        return model_mean + nonzero_mask * torch.sqrt(posterior_variance) * noise
 
     @torch.no_grad()
-    def sample(self, batch_size, image_size, return_intermediates=False, clip_denoised=False, deterministic=False):
+    def sample(
+            self,
+            batch_size,
+            image_size,
+            cond=None,
+            cond_scale=1.0,
+            return_intermediates=False,
+            clip_denoised=False,
+            deterministic=False):
         """
-        Full sampling loop using reverse steps. Uses scheduler.num_timesteps and sampler p_sample above.
+        Run the full reverse diffusion process to generate samples.
 
-        Steps:
-        -------
-        1. Start from Gaussian noise x_T ~ N(0, I).
-        2. Iteratively denoise: for t = T ... 1
-             x_{t-1} ~ p_θ(x_{t-1} | x_t).
-        3. Optionally return intermediates for visualization.
-
-        Output: final generated sample x₀.
+        :param batch_size: Number of samples to generate.
+        :param image_size: Output image or volume shape (excluding batch dimension).
+        :param cond: Conditioning tensor or ``None`` for unconditional sampling. Default is ``None``.
+        :param cond_scale: Classifier-free guidance scale. Default is 1.0.
+        :param return_intermediates: Whether to return intermediate denoising steps. Default is ``False``.
+        :param clip_denoised: Whether to clamp intermediate results to [-1, 1]. Default is ``False``.
+        :param deterministic: If ``True``, uses deterministic DDIM-like sampling. Default is ``False``.
+        :return: Final generated sample x₀, or a tuple (x₀, intermediates) if ``return_intermediates`` is True.
         """
         device = next(self.model.parameters()).device
-        img = torch.randn(batch_size, *image_size, device=device, dtype=torch.float32)
+        img = torch.randn(batch_size, *image_size, device=device)
         intermediates = [img.clone()]
 
         T = int(self.noise_scheduler.num_timesteps)
-        for i in tqdm(reversed(range(0, T)), desc='Sampling t', total=T):
+        for i in tqdm(reversed(range(0, T)), desc="Sampling t", total=T):
             t_tensor = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            img = self.p_sample(img, t_tensor, clip_denoised=clip_denoised, repeat_noise=False,
-                                deterministic=deterministic)
-            # debug print
-            print(f"[t={i}] img min {img.min().item():.6f}, max {img.max().item():.6f}, std {img.std().item():.6f}")
+            img = self.p_sample(
+                img,
+                t_tensor,
+                cond=cond,
+                cond_scale=cond_scale,
+                clip_denoised=clip_denoised,
+                deterministic=deterministic,
+            )
             if (i % max(1, T // 10)) == 0 or i == T - 1:
                 intermediates.append(img.clone())
 
-        if return_intermediates:
-            return img, intermediates
-        return img
+        return (img, intermediates) if return_intermediates else img

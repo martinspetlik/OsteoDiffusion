@@ -602,7 +602,8 @@ class UNet3D(nn.Module):
         # --- condition embedding ---
         if self.cond_mlp is not None:
             if cond is None:
-                cond_emb = torch.zeros(batch, self.cond_mlp[0].in_features, device=device)
+                # Produce zero embedding matching t_emb dimension
+                cond_emb = torch.zeros(batch, t_emb.shape[-1], device=device)
             else:
                 cond_emb = self.cond_mlp(cond)
             t_emb = t_emb + cond_emb

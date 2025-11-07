@@ -95,7 +95,7 @@ def get_vqgan_samples(vqgan_results_dir, vqgan_model_path, vqgan_trials_config, 
         print("output  threshold", output)
 
         np.save(os.path.join(sample_dir, "vqgan_input"), np.squeeze(input.cpu().numpy()))
-        np.save(os.path.join(sample_dir, "vqgan_output"), np.squeeze(output.cpu().numpy()))
+        np.save(os.path.join(sample_dir, "vqgan_output"), np.squeeze(output.detach().cpu().numpy()))
 
 
 def load_dataset(data_dir, data_file_name):
