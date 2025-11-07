@@ -5,6 +5,7 @@ import torch
 import shutil
 import numpy as np
 import yaml
+import joblib
 from dataset.cnn_diffusion.bone_dataset_CT import BoneDatasetCT
 from models.denoising_diffusion_latents.Unet3D import UNet3D
 from models.denoising_diffusion_latents.conditional_denoising_diffusion import ConditionalDiffusion
@@ -31,10 +32,24 @@ def load_trials_config(path_to_config):
     return trials_config
 
 
+def load_study(results_dir):
+    # Load the Optuna study object from a pickle file in the results directory
+    study = joblib.load(os.path.join(results_dir, "study.pkl"))
+
+    # Print summary info about the best trial found so far
+    print("Best trial until now:")
+    print(" Value: ", study.best_trial.value)
+    print(" Params: ")
+    for key, value in study.best_trial.params.items():
+        print(f"    {key}: {value}")
+
+    # Return the loaded study object
+    return study
+
+
 def load_diffusion_model(model_checkpoint_path, diffusion_train_config):
     """
     Method that loads a trained Conditional Diffusion model and its configuration.
-
     :param model_checkpoint_path: Path to the trained diffusion model checkpoint.
     :type model_checkpoint_path: str
     :param diffusion_train_config: Path to the diffusion training configuration YAML file.
@@ -103,32 +118,26 @@ def load_dataset(data_dir, data_file_name):
     return dataset
 
 
-def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=None, cond_scale=1.0,
-                     results_dir=None, clamp_diffusion_samples=False):
+def generate_samples(latent_diffusion_model, vqgan_model, trials_config, latent_diffusion_study,
+                     cond=None, cond_scale=1.0, results_dir=None, clamp_diffusion_samples=False):
     """
-    Method that generates 3D samples using a pretrained latent diffusion model and VQ-GAN decoder.
+    Generate 3D samples using a pretrained latent diffusion model and VQ-GAN decoder.
 
-    This function performs the following steps:
+    The function:
       1. Samples latent tensors from the diffusion model (optionally conditioned).
-      2. Optionally clamps generated samples to [-1, 1].
-      3. Converts latent samples back to spatial domain via inverse VQ-GAN transformation.
-      4. Decodes quantized features using the VQ-GAN decoder.
-      5. Saves and visualizes results in both raw and inverse-transformed form.
+      2. Optionally clamps generated latents to [-1, 1].
+      3. Maps latent samples back to the VQ-GAN latent space.
+      4. Decodes quantized features via the VQ-GAN decoder.
+      5. Saves and visualizes results in both latent and spatial domains.
 
-    :param latent_diffusion_model: Trained latent diffusion model.
-    :type latent_diffusion_model: torch.nn.Module
-    :param vqgan_model: Trained VQ-GAN model for decoding.
-    :type vqgan_model: torch.nn.Module
-    :param trials_config: Diffusion model training configuration.
-    :type trials_config: dict
-    :param cond: Conditioning tensor for guided generation (optional).
-    :type cond: torch.Tensor, optional
-    :param cond_scale: Scale factor for conditional guidance.
-    :type cond_scale: float
-    :param results_dir: Directory to store generated samples and visualizations.
-    :type results_dir: str, optional
-    :param clamp_diffusion_samples: Whether to clamp latent samples to [-1, 1].
-    :type clamp_diffusion_samples: bool
+    :param latent_diffusion_model: Trained latent diffusion model used for sampling.
+    :param vqgan_model: Trained VQ-GAN model used for decoding latent representations.
+    :param trials_config: Configuration dictionary from the diffusion model training.
+    :param latent_diffusion_study: Optuna or custom study object holding global min/max attributes.
+    :param cond: Optional conditioning tensor for guided generation.
+    :param cond_scale: Scaling factor for conditional guidance strength.
+    :param results_dir: Directory path to store generated samples and visualizations.
+    :param clamp_diffusion_samples: Whether to clamp latent diffusion outputs to [-1, 1].
     :return: None
     """
     batch_size_sample = 1
@@ -140,7 +149,7 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
 
     with torch.no_grad():
         for i in range(n_samples):
-            # Prepare result directory for this sample
+            # Prepare output directory for this sample
             if results_dir is not None:
                 sample_dir = os.path.join(results_dir, f"sample_{i}")
                 if os.path.exists(sample_dir):
@@ -148,14 +157,14 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
                 os.mkdir(sample_dir)
                 os.chdir(sample_dir)
 
-            # If no conditioning provided, use zeros (unconditional generation)
+            # Unconditional generation if no conditioning tensor provided
             if cond is None:
                 cond = torch.zeros(
                     (batch_size_sample, trials_config["cond_dim"]),
                     device=next(latent_diffusion_model.parameters()).device
                 )
 
-            # Generate latent samples
+            # Step 1: Sample from latent diffusion model
             samples = latent_diffusion_model.sample(
                 batch_size=batch_size_sample,
                 image_size=trials_config["image_size"],
@@ -163,6 +172,7 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
                 cond_scale=cond_scale,
             )
 
+            # Step 2: Optionally clamp to [-1, 1]
             if clamp_diffusion_samples:
                 samples = torch.clamp(samples, -1, 1)
 
@@ -171,18 +181,24 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
 
             generated_samples.append(samples.cpu())
 
-            # Map latent samples back through VQ-GAN inverse transform
-            samples_to_vqgan = inverse_latent_transform(samples, vqgan_model).to(dtype=torch.float32)
+            # Step 3: Inverse transform to VQ-GAN latent space
+            samples_to_vqgan = inverse_latent_transform(
+                samples,
+                vqgan_model,
+                latent_diffusion_study.user_attrs["global_min_value"],
+                latent_diffusion_study.user_attrs["global_max_value"]
+            ).to(dtype=torch.float32)
+
             print(f"Sample {i} (post-inverse): min={samples_to_vqgan.min():.4f}, max={samples_to_vqgan.max():.4f}")
 
-            # Decode samples
+            # Step 4: Decode using VQ-GAN decoder
             if not ("train_on_codebooks" in trials_config and trials_config["train_on_codebooks"]):
                 quant, emb_loss, info = vqgan_model.quantize(samples_to_vqgan)
                 decoded_samples = vqgan_model.decode(quant)
 
                 print(f"Decoded sample {i}: min={decoded_samples.min():.4f}, max={decoded_samples.max():.4f}")
 
-                # Save and visualize
+                # Step 5: Save and visualize
                 np.save(os.path.join(sample_dir, "decoded_samples"), np.squeeze(decoded_samples.cpu().numpy()))
 
                 try:
@@ -192,7 +208,7 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
                 except ImportError as e:
                     print(e.msg)
 
-                # Apply threshold and convert to HU scale
+                # Apply threshold and HU rescaling
                 threshold = -0.97
                 decoded_samples = np.squeeze(decoded_samples.cpu().numpy())
                 decoded_samples[decoded_samples < threshold] = -1
@@ -203,8 +219,8 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, cond=No
 
                 try:
                     render_3d_scan(np.squeeze(inv_decoded_samples),
-                               title="Generated sample (inverse transform)",
-                               fig_name=os.path.join(sample_dir, "gen_sample_inv.png"))
+                                   title="Generated sample (inverse transform)",
+                                   fig_name=os.path.join(sample_dir, "gen_sample_inv.png"))
                 except ImportError as e:
                     print(e.msg)
 
@@ -224,6 +240,7 @@ if __name__ == "__main__":
         sampling_config["denoising_diffusion_model_path"],
         sampling_config["denoising_diffusion_train_config"]
     )
+    latent_diffusion_study = load_study(sampling_config["denoising_diffusion_results_dir"])
 
     # Load VQ-GAN decoder
     vqgan_model_path = sampling_config.get("vqgan_model_path", None)
@@ -235,6 +252,7 @@ if __name__ == "__main__":
         latent_diffusion_model,
         vqgan_model,
         diffusion_trials_config,
+        latent_diffusion_study,
         results_dir=args.results_dir,
         clamp_diffusion_samples=sampling_config["clamp_diffusion_samples"]
     )

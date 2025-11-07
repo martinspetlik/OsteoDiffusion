@@ -31,18 +31,20 @@ def forward_latent_transform(h, vqgan):
     return ((h - w_min) / (w_max - w_min)) * 2.0 - 1.0
 
 
-def inverse_latent_transform(latents, vqgan):
+def inverse_latent_transform(latents, vqgan, global_min=None, global_max=None):
     """
-    Inverse of forward_latent_transform: maps normalized latents back to VQGAN space.
+    Map normalized latent vectors back to the original VQGAN latent space.
+    :param latents: Normalized latent representation (values typically in [-1, 1]).
+    :param vqgan: VQGAN model object containing quantize.embedding.weight.
+    :param global_min: Optional global minimum latent value. If None, computed from model weights.
+    :param global_max: Optional global maximum latent value. If None, computed from model weights.
+    :return: Denormalized latent tensor in the VQGAN latent space.
+    """
+    if global_max is None or global_min is None:
+        global_min = vqgan.quantize.embedding.weight.min().item()
+        global_max = vqgan.quantize.embedding.weight.max().item()
+    return ((latents + 1.0) / 2.0) * (global_max - global_min) + global_min
 
-    :param latents: normalized latent representation.
-    :param vqgan: VQGAN model with quantize.embedding.weight.
-    :return: original latent representation.
-    """
-    print("latents.shape ", latents.shape)
-    w_min = vqgan.quantize.embedding.weight.min().item()
-    w_max = vqgan.quantize.embedding.weight.max().item()
-    return ((latents + 1.0) / 2.0) * (w_max - w_min) + w_min
 
 
 def reshape_to_tensors(tn_array, dim=2):
