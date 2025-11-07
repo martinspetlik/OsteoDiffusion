@@ -46,7 +46,6 @@ def inverse_latent_transform(latents, vqgan, global_min=None, global_max=None):
     return ((latents + 1.0) / 2.0) * (global_max - global_min) + global_min
 
 
-
 def reshape_to_tensors(tn_array, dim=2):
     """
     Convert an array of upper-triangular values into a symmetric tensor.

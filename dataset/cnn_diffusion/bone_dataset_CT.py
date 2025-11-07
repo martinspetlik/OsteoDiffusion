@@ -8,10 +8,6 @@ import pandas as pd
 
 
 class BoneDatasetCT(Dataset):
-    """
-    Dataset for loading bone CT scan volumes and corresponding metadata.
-    Each sample contains a 3D CT image (.npz) and a metadata .xlsx file with patient info.
-    """
     def __init__(self, data_dir, data_file_name=None, input_transform=None, metadata_dir=None, metadata_file_name="metadata.xlsx"):
         """
         Initialize the dataset, locate all CT image and metadata files.
@@ -83,6 +79,7 @@ class BoneDatasetCT(Dataset):
         """
         metadata_dict = pd.read_excel(metadata_file, engine="openpyxl").iloc[0].to_dict()
         return {"sex": metadata_dict["sex"], "age": metadata_dict["CT date"] - metadata_dict["born"]}
+
 
     def __getitem__(self, idx):
         """
