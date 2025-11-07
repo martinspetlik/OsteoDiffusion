@@ -181,12 +181,24 @@ def generate_samples(latent_diffusion_model, vqgan_model, trials_config, latent_
 
             generated_samples.append(samples.cpu())
 
+            # Convert global min/max arrays to tensors on same device
+            global_min = torch.as_tensor(
+                latent_diffusion_study.user_attrs["global_min_value"],
+                device=next(vqgan_model.parameters()).device,
+                dtype=torch.float32
+            )
+            global_max = torch.as_tensor(
+                latent_diffusion_study.user_attrs["global_max_value"],
+                device=next(vqgan_model.parameters()).device,
+                dtype=torch.float32
+            )
+
             # Step 3: Inverse transform to VQ-GAN latent space
             samples_to_vqgan = inverse_latent_transform(
                 samples,
                 vqgan_model,
-                latent_diffusion_study.user_attrs["global_min_value"],
-                latent_diffusion_study.user_attrs["global_max_value"]
+                global_min,
+                global_max
             ).to(dtype=torch.float32)
 
             print(f"Sample {i} (post-inverse): min={samples_to_vqgan.min():.4f}, max={samples_to_vqgan.max():.4f}")
