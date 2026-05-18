@@ -106,9 +106,9 @@ class ConditionalDiffusion(nn.Module):
 
         # --- classifier-free guidance dropout ---
         if self.training and self.cond_scale > 0:
-            drop_mask = torch.rand(batch_size, 1, device=cond.device) < self.cond_scale
+            drop_mask = torch.rand(batch_size, device=cond.device) < self.cond_scale
             cond = cond.clone()
-            cond[drop_mask.squeeze()] = 0.0  # drop condition for subset of batch
+            cond[drop_mask] = 0.0  # drop condition for subset of batch
 
         # Predict noise with conditional UNet
         predicted_noise = self.model(x_noised, t, cond)
@@ -198,7 +198,16 @@ class ConditionalDiffusion(nn.Module):
                    - posterior_variance: variance σ²_t of the reverse process
                    - posterior_log_variance: log variance for numerical stability
         """
-        eps_pred = self.model(x_t, t, cond)
+        # Pass zeros explicitly for the unconditional pass instead of
+        # None, so the UNet always receives a well-defined conditioning tensor.
+        if cond is None:
+            cond_input = torch.zeros(
+                x_t.shape[0], self.model.cond_dim, device=x_t.device
+            )
+        else:
+            cond_input = cond
+
+        eps_pred = self.model(x_t, t, cond_input)
         x0_pred = self.predict_start_from_noise(x_t, t, eps_pred)
         if clip_denoised:
             x0_pred = x0_pred.clamp(-1.0, 1.0)
@@ -220,6 +229,11 @@ class ConditionalDiffusion(nn.Module):
 
         Implements classifier-free guidance when ``cond_scale`` > 1.0.
 
+        CFG formula (applied here):
+            ε_guided = ε_uncond + cond_scale * (ε_cond - ε_uncond)
+            x₀_pred  = predict_start_from_noise(x_t, t, ε_guided)
+            μ, σ²    = q_posterior(x₀_pred, x_t, t)
+
         :param x_t: Current noisy sample at timestep t.
         :param t: Current timestep indices.
         :param cond: Conditioning tensor or ``None`` for unconditional sampling. Default is ``None``.
@@ -231,16 +245,23 @@ class ConditionalDiffusion(nn.Module):
         """
         b, *_, device = *x_t.shape, x_t.device
 
-        # --- Classifier-free guidance ---
         if cond is not None and cond_scale != 1.0:
-            model_mean_cond, var_cond, _ = self.p_mean_variance(
-                x_t, t, cond=cond, clip_denoised=clip_denoised
+            # --- Classifier-free guidance applied in ε-space ---
+            eps_cond = self.model(x_t, t, cond)
+            eps_uncond = self.model(
+                x_t, t,
+                torch.zeros(b, self.model.cond_dim, device=device)
             )
-            model_mean_uncond, _, _ = self.p_mean_variance(
-                x_t, t, cond=None, clip_denoised=clip_denoised
+
+            # Interpolate the noise predictions, then convert to mean once
+            eps_guided = eps_uncond + cond_scale * (eps_cond - eps_uncond)
+
+            x0_pred = self.predict_start_from_noise(x_t, t, eps_guided)
+            if clip_denoised:
+                x0_pred = x0_pred.clamp(-1.0, 1.0)
+            model_mean, posterior_variance, _ = self.q_posterior(
+                x_start=x0_pred, x_t=x_t, t=t
             )
-            model_mean = model_mean_uncond + cond_scale * (model_mean_cond - model_mean_uncond)
-            posterior_variance = var_cond
         else:
             model_mean, posterior_variance, _ = self.p_mean_variance(
                 x_t, t, cond=cond, clip_denoised=clip_denoised
@@ -296,3 +317,53 @@ class ConditionalDiffusion(nn.Module):
                 intermediates.append(img.clone())
 
         return (img, intermediates) if return_intermediates else img
+
+    @torch.no_grad()
+    def conditioning_diagnostic(self, x_t, t, cond, verbose=True):
+        """
+        Measure how much the model's noise prediction changes between the
+        conditional and unconditional passes.
+
+        If the mean absolute difference is near zero, the model has learned
+        to ignore conditioning — CFG will have no effect regardless of scale.
+
+        :param x_t:  Tensor (B, C, D, H, W)  noisy sample at some timestep.
+        :param t:    Tensor (B,)              timestep indices.
+        :param cond: Tensor (B, cond_dim)     conditioning vector.
+        :return: (diff_mean, diff_std)
+        """
+        self.model.eval()
+
+        eps_cond = self.model(x_t, t, cond)
+        eps_uncond = self.model(
+            x_t, t,
+            torch.zeros(x_t.shape[0], self.model.cond_dim, device=x_t.device)
+        )
+
+        abs_diff = (eps_cond - eps_uncond).abs()
+        diff_mean = abs_diff.mean().item()
+        diff_std = abs_diff.std().item()
+
+        if verbose:
+            print("\n" + "=" * 60)
+            print("CONDITIONING DIAGNOSTIC  (eps-space)")
+            print("=" * 60)
+            print(f"  Mean |eps_cond - eps_uncond| : {diff_mean:.6f}")
+            print(f"  Std  |eps_cond - eps_uncond| : {diff_std:.6f}")
+            print()
+            if diff_mean < 1e-4:
+                print("  [FAIL] Model ignores conditioning.")
+                print("         CFG has no effect at any scale.")
+                print("         -> Increase cond_scale (dropout prob) to 0.20-0.30")
+                print("         -> Switch to 'film' or 'cross_attn' mode in UNet3D")
+                print("         -> Check latent biological signal (run cnn_probe_latents.py)")
+            elif diff_mean < 1e-2:
+                print("  [WEAK] Signal present but weak.")
+                print("         -> Try cond_scale in [5.0, 10.0]")
+                print("         -> Consider 'film' conditioning mode")
+            else:
+                print("  [OK]   Conditioning signal is active.")
+                print("         -> Sweep cond_scale in [2.0, 7.0]")
+            print("=" * 60)
+
+        return diff_mean, diff_std
