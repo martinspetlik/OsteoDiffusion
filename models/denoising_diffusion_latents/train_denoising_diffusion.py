@@ -229,7 +229,7 @@ def objective(trial, trials_config, mlf_wrapper, load_existing=False):
     unet_diffusion_model = model_class(**unet_config)
 
     noise_scheduler = NoiseScheduler(**trials_config["noise_scheduler_params"])
-    diff_model = ConditionalDiffusion(unet_diffusion_model, trials_config["image_size"], noise_scheduler, trials_config["cond_scale"]).to(device)
+    diff_model = ConditionalDiffusion(unet_diffusion_model, trials_config["image_size"], noise_scheduler, trials_config["cond_drop_prob"]).to(device)
 
     # ------------------------
     # Optimizer + Scheduler
