@@ -43,7 +43,7 @@ class ConditionalDiffusion(nn.Module):
        where μ_θ depends on ε_θ and the diffusion equations.
     """
 
-    def __init__(self, cnn_model, image_size, noise_scheduler, cond_scale=0.1):
+    def __init__(self, cnn_model, image_size, noise_scheduler, cond_drop_prob=0.1):
         super().__init__()
         self._name = "ConditionalDiffusion"
 
@@ -53,9 +53,11 @@ class ConditionalDiffusion(nn.Module):
 
         # Probability to randomly drop conditions during training
         # (important for classifier-free guidance, so the model learns unconditional too)
-        self.cond_scale = cond_scale
+        self.cond_drop_prob = cond_drop_prob
         #self.parameterization = "x0" #"eps"
         self.log_every_t = 10
+
+        print("cond drop prob ", self.cond_drop_prob)
 
     # -------------------
     # Forward process (q)
@@ -105,8 +107,8 @@ class ConditionalDiffusion(nn.Module):
         x_noised = self.q_sample(data, t, noise=noise)
 
         # --- classifier-free guidance dropout ---
-        if self.training and self.cond_scale > 0:
-            drop_mask = torch.rand(batch_size, device=cond.device) < self.cond_scale
+        if self.training and self.cond_drop_prob > 0:
+            drop_mask = torch.rand(batch_size, device=cond.device) < self.cond_drop_prob
             cond = cond.clone()
             cond[drop_mask] = 0.0  # drop condition for subset of batch
 
@@ -318,52 +320,71 @@ class ConditionalDiffusion(nn.Module):
 
         return (img, intermediates) if return_intermediates else img
 
+    # ------------------------------------------------------------------
+    # Conditioning diagnostic
+    # ------------------------------------------------------------------
+
     @torch.no_grad()
     def conditioning_diagnostic(self, x_t, t, cond, verbose=True):
         """
-        Measure how much the model's noise prediction changes between the
-        conditional and unconditional passes.
+        Measures how much the model output changes between conditioned
+        and unconditioned predictions, and between contrasting conditions.
 
-        If the mean absolute difference is near zero, the model has learned
-        to ignore conditioning — CFG will have no effect regardless of scale.
+        A model that ignores conditioning will show near-zero differences
+        regardless of cond_scale at inference — CFG will have no effect.
 
-        :param x_t:  Tensor (B, C, D, H, W)  noisy sample at some timestep.
-        :param t:    Tensor (B,)              timestep indices.
-        :param cond: Tensor (B, cond_dim)     conditioning vector.
-        :return: (diff_mean, diff_std)
+        Call this after loading a checkpoint to confirm conditioning is active
+        before generating samples.
+
+        :param x_t:     Noisy latent tensor (B, C, D, H, W).
+        :param t:       Timestep tensor (B,).
+        :param cond:    Conditioning tensor (B, cond_dim).
+        :param verbose: Print detailed per-pair breakdown. Default True.
+        :return: (diff_mean, diff_std) — mean and std of |cond - uncond| output diffs.
+
+        Interpretation
+        --------------
+        diff_mean < 0.001  → model completely ignores conditioning
+        diff_mean 0.001–0.01 → weak conditioning signal
+        diff_mean > 0.01   → conditioning is active, CFG will have effect
         """
-        self.model.eval()
+        self.eval()
 
-        eps_cond = self.model(x_t, t, cond)
-        eps_uncond = self.model(
-            x_t, t,
-            torch.zeros(x_t.shape[0], self.model.cond_dim, device=x_t.device)
-        )
+        # Unconditional prediction: cond=None → cond_mlp returns zeros in UNet3D
+        eps_uncond = self.model(x_t, t, None)
 
-        abs_diff = (eps_cond - eps_uncond).abs()
-        diff_mean = abs_diff.mean().item()
-        diff_std = abs_diff.std().item()
+        diffs = []
+        for i in range(cond.shape[0]):
+            # Broadcast single conditioning vector across the whole batch
+            c = cond[i:i + 1].expand(x_t.shape[0], -1)
+            eps_cond = self.model(x_t, t, c)
+            diff = (eps_cond - eps_uncond).abs().mean().item()
+            diffs.append(diff)
+
+            if verbose:
+                sex_str = "female" if cond[i, 0].item() == 1.0 else "male"
+                age_str = f"{cond[i, 1].item() * 100:.0f}"
+                print(f"  cond [{sex_str}, age={age_str}] vs uncond : diff={diff:.6f}")
+
+        # Cross-condition contrast: how different are the two most extreme conditions
+        if cond.shape[0] >= 2:
+            eps_0 = self.model(x_t, t, cond[0:1].expand(x_t.shape[0], -1))
+            eps_1 = self.model(x_t, t, cond[1:2].expand(x_t.shape[0], -1))
+            cross_diff = (eps_0 - eps_1).abs().mean().item()
+            if verbose:
+                print(f"  cross-condition diff (cond[0] vs cond[1]) : {cross_diff:.6f}")
+
+        diffs = np.array(diffs)
+        diff_mean = float(diffs.mean())
+        diff_std = float(diffs.std())
 
         if verbose:
-            print("\n" + "=" * 60)
-            print("CONDITIONING DIAGNOSTIC  (eps-space)")
-            print("=" * 60)
-            print(f"  Mean |eps_cond - eps_uncond| : {diff_mean:.6f}")
-            print(f"  Std  |eps_cond - eps_uncond| : {diff_std:.6f}")
-            print()
-            if diff_mean < 1e-4:
-                print("  [FAIL] Model ignores conditioning.")
-                print("         CFG has no effect at any scale.")
-                print("         -> Increase cond_scale (dropout prob) to 0.20-0.30")
-                print("         -> Switch to 'film' or 'cross_attn' mode in UNet3D")
-                print("         -> Check latent biological signal (run cnn_probe_latents.py)")
-            elif diff_mean < 1e-2:
-                print("  [WEAK] Signal present but weak.")
-                print("         -> Try cond_scale in [5.0, 10.0]")
-                print("         -> Consider 'film' conditioning mode")
-            else:
-                print("  [OK]   Conditioning signal is active.")
-                print("         -> Sweep cond_scale in [2.0, 7.0]")
-            print("=" * 60)
+            print(f"\n  Mean output diff (cond vs uncond) : {diff_mean:.6f}")
+            print(f"  Std  output diff                  : {diff_std:.6f}")
+            print(f"\n  Threshold interpretation:")
+            print(f"    < 0.001    → model ignores conditioning completely")
+            print(f"    0.001–0.01 → weak conditioning signal")
+            print(f"    > 0.01     → conditioning is active")
 
         return diff_mean, diff_std
+
