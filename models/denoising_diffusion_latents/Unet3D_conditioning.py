@@ -171,3 +171,35 @@ class ConcatConditioning(nn.Module):
         cond_feat = cond_feat[:, :, None, None, None].expand(b, -1, d, h, w)
         x_cat = torch.cat([x, cond_feat], dim=1)
         return self.act(self.norm(self.fuse(x_cat)))
+
+
+class FourierAgeEmbedding(nn.Module):
+    """
+    Encodes the age scalar into a rich Fourier feature vector.
+    Fixed random frequencies — same idea as sinusoidal positional encodings.
+    Sex scalar is kept separate and concatenated after.
+
+    Input cond:  (B, 2)  — [sex, age_norm]
+    Output:      (B, 1 + fourier_dim)  — [sex, sin/cos age features]
+    """
+    def __init__(self, fourier_dim=64):
+        super().__init__()
+        # Fixed random frequencies — not learned, not updated
+        self.register_buffer(
+            'freqs',
+            torch.randn(fourier_dim // 2) * 10
+        )
+        self.out_dim = 1 + fourier_dim  # sex scalar + Fourier age features
+
+    def forward(self, cond):
+        """
+        :param cond: (B, 2) — [sex, age_norm]
+        :return:     (B, 1 + fourier_dim)
+        """
+        sex = cond[:, 0:1]                        # (B, 1)
+        age = cond[:, 1]                           # (B,)
+
+        x = age[:, None] * self.freqs[None, :] * 2 * torch.pi  # (B, fourier_dim//2)
+        age_feat = torch.cat([x.sin(), x.cos()], dim=-1)        # (B, fourier_dim)
+
+        return torch.cat([sex, age_feat], dim=-1)  # (B, 1 + fourier_dim)

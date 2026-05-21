@@ -13,6 +13,7 @@ from models.denoising_diffusion_latents.Unet3D_conditioning import (
     ResnetBlockFiLM,
     CrossAttentionConditioning,
     ConcatConditioning,
+    FourierAgeEmbedding
 )
 
 # ---------------------------
@@ -361,6 +362,8 @@ class UNet3D(nn.Module):
             dim,
             cond_dim=0,
             conditioning_mode="add_original",
+            use_fourier_age_emb=False,
+            fourier_age_dim=64,
             out_dim=None,
             dim_mults=(1, 2, 4, 8),
             channels=3,
@@ -380,7 +383,7 @@ class UNet3D(nn.Module):
         self._name = "MedicalDiffusionUNet3DOwn"
         self.channels = channels
         self.dim = dim
-        self.cond_dim = cond_dim                          #  store for CFG zeros
+        self.cond_dim = cond_dim          # stored for CFG zero-conditioning pass
         self.conditioning_mode = conditioning_mode
         self._use_temporal_attention = use_temporal_attention
 
@@ -424,9 +427,21 @@ class UNet3D(nn.Module):
             nn.Linear(time_dim, time_dim)
         )
 
+        # --- Fourier age embedding (optional) ---
+        # Replaces the raw age scalar with sin/cos features before cond_mlp.
+        # Turns age from 1 number into fourier_age_dim features, giving the
+        # network a much richer signal to work with across the age range.
+        # Sex scalar is kept raw and concatenated: output dim = 1 + fourier_age_dim.
+        self.fourier_age_emb = None
+        effective_cond_dim   = cond_dim  # default: use raw cond as-is
+
+        if cond_dim > 0 and use_fourier_age_emb:
+            self.fourier_age_emb = FourierAgeEmbedding(fourier_dim=fourier_age_dim)
+            # cond_mlp and conditioning modules must use the expanded dim
+            effective_cond_dim   = self.fourier_age_emb.out_dim  # = 1 + fourier_age_dim
+
         # --- Condition embedding ---
-        # Other modes set up their own modules below.
-        self.cond_mlp        = None   # used by "add_original" and "add"
+        self.cond_mlp        = None   # used by "add_original", "add", "film"
         self.cond_gate       = None   # used by "add" only
         self.cond_cross_attn = None   # used by "cross_attn" only
         self.cond_concat     = None   # used by "concat" only
@@ -434,13 +449,13 @@ class UNet3D(nn.Module):
         mid_dim = dims[-1]
 
         if cond_dim > 0:
-            cond_hidden  = max(64, cond_dim * 16)
+            cond_hidden  = max(64, effective_cond_dim * 16)
             cond_emb_dim = time_dim
 
             if conditioning_mode == "add_original":
-                # Exact original cond_mlp — no change in behaviour
+                # Exact original behaviour — direct linear on raw (or Fourier) cond
                 self.cond_mlp = nn.Sequential(
-                    nn.Linear(cond_dim, time_dim),
+                    nn.Linear(effective_cond_dim, time_dim),
                     nn.GELU(),
                     nn.Linear(time_dim, time_dim),
                 )
@@ -448,28 +463,28 @@ class UNet3D(nn.Module):
             elif conditioning_mode == "add":
                 # Hidden bottleneck prevents near-zero gradients for small cond_dim
                 self.cond_mlp = nn.Sequential(
-                    nn.Linear(cond_dim,    cond_hidden),
+                    nn.Linear(effective_cond_dim, cond_hidden),
                     nn.GELU(),
-                    nn.Linear(cond_hidden, cond_emb_dim),
+                    nn.Linear(cond_hidden,        cond_emb_dim),
                     nn.GELU(),
-                    nn.Linear(cond_emb_dim, cond_emb_dim),
+                    nn.Linear(cond_emb_dim,       cond_emb_dim),
                 )
                 self.cond_gate = nn.Parameter(torch.ones(1))
 
             elif conditioning_mode == "film":
-                # Same improved projection; passed to ResnetBlockFiLM blocks
+                # Improved projection; passed through _block_forward to every ResnetBlockFiLM
                 self.cond_mlp = nn.Sequential(
-                    nn.Linear(cond_dim,    cond_hidden),
+                    nn.Linear(effective_cond_dim, cond_hidden),
                     nn.GELU(),
-                    nn.Linear(cond_hidden, cond_emb_dim),
+                    nn.Linear(cond_hidden,        cond_emb_dim),
                     nn.GELU(),
-                    nn.Linear(cond_emb_dim, cond_emb_dim),
+                    nn.Linear(cond_emb_dim,       cond_emb_dim),
                 )
 
             elif conditioning_mode == "cross_attn":
                 self.cond_cross_attn = CrossAttentionConditioning(
                     spatial_dim=mid_dim,
-                    cond_dim=cond_dim,
+                    cond_dim=effective_cond_dim,
                     heads=cross_attn_heads,
                     dim_head=cross_attn_dim_head,
                 )
@@ -477,10 +492,12 @@ class UNet3D(nn.Module):
             elif conditioning_mode == "concat":
                 self.cond_concat = ConcatConditioning(
                     spatial_dim=mid_dim,
-                    cond_dim=cond_dim,
+                    cond_dim=effective_cond_dim,
                 )
 
-        # choose block factory based on mode
+        # --- Block factory ---
+        # film mode: every ResNet block receives separate FiLM conditioning.
+        # All other modes: plain ResnetBlock (conditioning injected via t_emb or bottleneck).
         _film_cond_dim = time_dim if (cond_dim > 0 and conditioning_mode == "film") else None
 
         if conditioning_mode == "film" and cond_dim > 0:
@@ -499,16 +516,12 @@ class UNet3D(nn.Module):
                     groups=resnet_groups,
                 )
 
-        # --- Block definitions ---
-        block_klass = partial(ResnetBlock, groups=resnet_groups)
-        block_klass_cond = partial(block_klass, time_emb_dim=time_dim)
-
         # --- Encoder (downs) ---
         self.downs = nn.ModuleList([])
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (len(in_out) - 1)
             self.downs.append(nn.ModuleList([
-                make_block(dim_in, dim_out),
+                make_block(dim_in,  dim_out),
                 make_block(dim_out, dim_out),
                 Residual(PreNorm(dim_out, SpatialLinearAttention(dim_out, heads=attn_heads)))
                 if use_sparse_linear_attn else nn.Identity(),
@@ -534,7 +547,7 @@ class UNet3D(nn.Module):
             is_last = ind >= (len(in_out) - 1)
             self.ups.append(nn.ModuleList([
                 make_block(dim_out * 2, dim_in),
-                make_block(dim_in, dim_in),
+                make_block(dim_in,      dim_in),
                 Residual(PreNorm(dim_in, SpatialLinearAttention(dim_in, heads=attn_heads)))
                 if use_sparse_linear_attn else nn.Identity(),
                 Residual(PreNorm(dim_in, temporal_attn(dim_in))),
@@ -542,11 +555,11 @@ class UNet3D(nn.Module):
             ]))
 
         # --- Final convolution ---
+        # Uses make_block so film conditioning is applied here too.
+        # Kept as two separate attributes so _block_forward can dispatch correctly.
         out_dim = default(out_dim, channels)
-        self.final_conv = nn.Sequential(
-            block_klass(dim * 2, dim),
-            nn.Conv3d(dim, out_dim, 1)
-        )
+        self.final_conv_block = make_block(dim * 2, dim)
+        self.final_conv_out   = nn.Conv3d(dim, out_dim, 1)
 
     # block forward dispatch
     def _block_forward(self, block, x, t_emb, cond_emb):
@@ -560,37 +573,71 @@ class UNet3D(nn.Module):
         return block(x, time_emb=t_emb)
 
     def forward(self, x, time, cond=None):
+        """
+        Forward pass of UNet3D for denoising diffusion.
+
+        Input:
+        - x:    (B, C, D, H, W)  noised input volume
+        - time: (B,)             diffusion timesteps
+        - cond: (B, cond_dim)    conditioning vector [sex, age_norm], or None for unconditional
+
+        Unconditional pass (cond=None):
+          cond_in is set to zeros so the network sees a consistent input shape.
+          This is used both during CFG training dropout and at inference for the
+          unconditioned branch of classifier-free guidance.
+
+        Workflow:
+        1. Time embedding via sinusoidal + MLP.
+        2. Optional Fourier age embedding applied to cond before cond_mlp.
+        3. Mode-dependent conditioning injection (add / film / cross_attn / concat).
+        4. Encode with downsampling — ResNet blocks + spatial & temporal attention.
+        5. Bottleneck with attention + optional cross_attn / concat conditioning.
+        6. Decode with upsampling.
+        7. Final conv block (receives film conditioning if in film mode).
+        """
         x = x.float()
         batch, device = x.shape[0], x.device
 
         # --- time embedding ---
         t_emb = self.time_mlp(time)
 
-        # mode-dependent conditioning setup.
-        # Always compute cond_in as zeros when cond is None (clean uncond pass).
+        # --- conditioning input ---
+        # Always produce a concrete tensor so all modes see a consistent shape.
+        # When cond is None (unconditional pass), use zeros of the RAW cond_dim.
+        # The Fourier embedding and cond_mlp are still applied to the zeros,
+        # which produces a stable near-zero embedding without any special casing.
         cond_in = cond.float() if cond is not None else torch.zeros(
             batch, self.cond_dim, device=device
         )
-        cond_emb = None
 
+        # --- optional Fourier age embedding ---
+        # Expands age scalar → sin/cos features before cond_mlp.
+        # Applied to both conditioned and unconditional (zero) inputs.
+        if self.fourier_age_emb is not None:
+            cond_in = self.fourier_age_emb(cond_in)  # (B, 1 + fourier_age_dim)
+
+        # --- condition embedding via cond_mlp ---
+        cond_emb = None
         if self.cond_mlp is not None:
             cond_emb = self.cond_mlp(cond_in)
 
+        # --- mode-dependent injection into t_emb ---
         if self.conditioning_mode == "add_original" and cond_emb is not None:
-            # Original behaviour: direct addition to t_emb
+            # Original behaviour: direct addition to time embedding
             t_emb = t_emb + cond_emb
 
         elif self.conditioning_mode == "add" and cond_emb is not None:
-            # Improved: gate-scaled addition
+            # Improved: learnable scalar gate controls contribution strength.
+            # Gate initialised to 1.0; learned during training.
             t_emb = t_emb + self.cond_gate * cond_emb
 
-        # "film":       cond_emb passed through _block_forward to every block
-        # "cross_attn": injected at bottleneck below
-        # "concat":     injected at bottleneck below
+        # "film"       → cond_emb forwarded to every block via _block_forward
+        # "cross_attn" → injected at bottleneck only (see below)
+        # "concat"     → injected at bottleneck only (see below)
 
         # --- init conv ---
         x = self.init_conv(x)
-        r = x.clone()
+        r = x.clone()   # skip connection to final conv
 
         # --- encoder (downs) ---
         h = []
@@ -626,5 +673,8 @@ class UNet3D(nn.Module):
             x = upsample(x)
 
         # --- output ---
+        # final_conv_block uses make_block so film conditioning reaches here too.
+        # final_conv_out is a plain 1x1 conv — no conditioning needed.
         x = torch.cat((x, r), dim=1)
-        return self.final_conv(x)
+        x = self._block_forward(self.final_conv_block, x, t_emb, cond_emb)
+        return self.final_conv_out(x)
