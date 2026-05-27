@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from tqdm import tqdm
 from models.auxiliary_functions import extract
 from torch.functional import F
@@ -252,7 +253,7 @@ class ConditionalDiffusion(nn.Module):
             eps_cond = self.model(x_t, t, cond)
             eps_uncond = self.model(
                 x_t, t,
-                torch.zeros(b, self.model.cond_dim, device=device)
+                torch.zeros_like(cond)
             )
 
             # Interpolate the noise predictions, then convert to mean once
